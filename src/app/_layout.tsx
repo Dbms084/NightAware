@@ -2,7 +2,7 @@ import '../global.css';
 
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
-import { DarkTheme, ThemeProvider, Stack } from 'expo-router';
+import { DarkTheme, ThemeProvider, Stack, useRouter, useSegments } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 
 import { AuthProvider, useAuth } from '@/features/auth/providers/AuthProvider';
@@ -11,12 +11,26 @@ void SplashScreen.preventAutoHideAsync();
 
 function RootNavigator() {
   const { user, isLoading } = useAuth();
+  const router = useRouter();
+  const segments = useSegments();
 
   useEffect(() => {
     if (!isLoading) {
       void SplashScreen.hideAsync();
     }
   }, [isLoading]);
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    const isAuthRoute = segments[0] === '(auth)';
+    const isAppRoute = segments[0] === '(app)';
+    if (user && !isAppRoute) {
+      router.replace('/(app)');
+    } else if (!user && !isAuthRoute) {
+      router.replace('/(auth)/sign-in');
+    }
+  }, [isLoading, router, segments, user]);
 
   if (isLoading) {
     return (
@@ -29,12 +43,8 @@ function RootNavigator() {
   return (
     <ThemeProvider value={DarkTheme}>
       <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Protected guard={!user}>
-          <Stack.Screen name="(auth)" />
-        </Stack.Protected>
-        <Stack.Protected guard={Boolean(user)}>
-          <Stack.Screen name="(app)" />
-        </Stack.Protected>
+        <Stack.Screen name="(auth)" />
+        <Stack.Screen name="(app)" />
       </Stack>
     </ThemeProvider>
   );
