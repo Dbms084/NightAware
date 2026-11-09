@@ -1,96 +1,84 @@
-# Women's Night Route Companion
+# NightAware — Women's Night Route Companion
 
-An Android-first Expo app for comparing night journeys by travel time and the distribution of nearby shop listings. The project is intended to help people make an informed comparison; activity indicators are **not a safety guarantee**.
+An Android-first React Native & Expo application designed to help users compare evening and nighttime routes. Displays journey times, nearby accessible/open nighttime places (pharmacies, medical stores, petrol pumps, transport hubs, police stations), and computes a **Night Activity Score** to help you make informed route choices.
 
-## Current features
+> **Important Note:** Night Activity Scores reflect surrounding open amenities and help points as an activity proxy, not a guaranteed measure of personal safety.
 
-- Email/password registration and sign-in using Supabase Auth, including session restoration and sign-out.
-- Journey planner with place search, optional foreground current-location lookup, and walking/driving modes.
-- Route comparison and turn-by-turn navigation powered by Mapbox.
-- Shop listings summarized by route segment, with an activity proxy score when there is enough listing data.
+---
 
-Live search, route, navigation, and shop data require a Mapbox token and network access. Shop listings and a score derived from them do not measure people present, crime, lighting, or personal safety. The app must not describe a route as safe or unsafe.
+## Features
 
-## Tech stack
+- 📍 **High-Precision GPS Location**: Detects your precise live location and reverse-geocodes your address.
+- 🔍 **Uber / Google Maps Style Route Search**: Instant autocomplete suggestions for both **Start** and **Destination** with "Your current location (GPS)" as the top suggestion.
+- 🗺️ **Interactive Dark-Themed Map**: Powered by `react-native-maps` with Google Maps custom night styling, dynamic camera auto-centering, and route framing.
+- ⚡ **Real Google Routes & Alternatives**: Multi-route calculation displaying recommended and fastest alternatives.
+- 🌟 **Night Activity Score /100**: Evaluates nearby open amenities, help point density, and route coverage.
+- 📲 **Smooth Animated Map Expansion**: One-tap full-screen map expansion with Reanimated and floating detail controls.
+- 🔐 **Supabase Authentication**: Secure email/password sign-up, sign-in, session restoration, and logout.
 
-- Expo SDK 58, React Native 0.88, TypeScript 6, and Expo Router.
-- NativeWind 5 release candidate with Tailwind CSS 4.
-- Supabase Auth only, with AsyncStorage-backed native session persistence.
-- `@rnmapbox/maps` and `@rnmapbox/navigation` for maps and navigation; `expo-location` for foreground location.
+---
 
-## Get started
+## Setup & Running the Project
 
-### Requirements
+### 1. Prerequisites
+- **Node.js** (v18 or higher recommended)
+- **npm** or **yarn**
+- **Android Studio** (with an Android Emulator or connected physical device) OR **Expo Go** on your phone
 
-- Node.js and npm.
-- An Expo-compatible Android development environment. Mapbox native maps/navigation may require a development build; Expo Go may not include these native modules.
-- A Supabase project with Email auth enabled and a public/publishable client key.
-- A Mapbox public access token with access to the APIs used by this app.
-
-### Configure environment
-
-Copy `.env.example` to `.env` and set:
-
-```dotenv
-EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-public-key
-EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN=pk.your-mapbox-token
+### 2. Clone and Install Dependencies
+```bash
+git clone https://github.com/Dbms084/NightAware.git
+cd NightAware
+npm install
 ```
 
-The app also accepts `EXPO_PUBLIC_SUPABASE_ANON_KEY` as a compatibility fallback. Only public client keys belong in the mobile app; never put a Supabase service-role key here. Do not commit `.env`.
-
-### Install and run
-
+### 3. Configure Environment Variables
+Copy `.env.example` to create your local `.env` file:
 ```bash
-npm install
+cp .env.example .env
+```
+*(On Windows PowerShell: `Copy-Item .env.example .env`)*
+
+In `.env`:
+- **Google Maps API Key**: Get a key from [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with Maps SDK for Android, Places API (New), Routes API, and Geocoding API enabled, and set:
+  ```env
+  GOOGLE_MAPS_API_KEY=your-google-maps-api-key-here
+  EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=your-google-maps-api-key-here
+  ```
+- **Supabase Auth**: Create a free project at [supabase.com](https://supabase.com) and add your project credentials:
+  ```env
+  EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+  EXPO_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+  ```
+
+### 4. Run the App
+
+#### Option A: Quick Launcher (Windows PowerShell)
+Right-click `start-dev.ps1` and select **Run with PowerShell**, or in terminal:
+```powershell
+.\start-dev.ps1
+```
+
+#### Option B: Standard Expo CLI
+```bash
+# If using an Android emulator or USB device:
+npm run android
+
+# Or start the Metro bundler:
 npx expo start
 ```
 
-For native Android modules, create/run the project's development build using the configured Android toolchain:
+---
 
-```bash
-npx expo run:android
-```
+## Tech Stack
 
-Other useful scripts: `npm run web`, `npm run ios`, and `npm run lint`.
-
-## Project layout
-
-```text
-src/
-  app/                       Expo Router routes and auth/app layouts
-    (auth)/                  Sign-in and sign-up
-    (app)/                   Journey planner, route comparison, navigation
-  components/                Shared presentation components
-  constants/                 Theme tokens
-  features/
-    auth/                    Auth form, provider, and Supabase auth service
-    journey/                 Journey state, location search, map, Mapbox service
-  lib/supabase.ts            Single Supabase client (auth only)
-assets/                      App icons and images
-```
-
-The top-level `app.json` configures Expo Router, Mapbox, and foreground location permissions. `src/global.css` and the app's NativeWind setup provide utility styling.
-
-## Adding a feature
-
-1. Read `AGENTS.md` before making changes. It defines product scope, privacy requirements, UI conventions, and the backend boundary.
-2. Keep feature code grouped under `src/features/<feature>/`; keep route files in `src/app/` focused on screen composition and navigation.
-3. Define shared domain types once and keep data access/score calculations out of UI components.
-4. Reuse the dark theme and NativeWind `className` styling. Keep controls accessible and handle loading, empty, permission-denied, and error states.
-5. Treat location and journey coordinates as sensitive. Request foreground location only when needed; do not log or persist them automatically.
-6. Supabase is for authentication only. Do not add route, place, profile, incident, or journey data to Supabase. Do not add external routing/places providers without explicit product approval.
-7. Clearly label sample data and explain its limits. A shop-listing-derived score is only an activity proxy, not evidence of safety or actual foot traffic.
-
-Before submitting, run `npx tsc --noEmit` and `npm run lint` when available, then check the affected flow on an Android development build. Automated checks do not replace device verification.
-
-## Data and privacy notes
-
-- Supabase stores/authenticates accounts only; no application database is part of this project.
-- Place queries and route endpoints/coordinates are sent to Mapbox to provide search, routing, and shop results. Review Mapbox terms, data handling, attribution, and billing for your deployment.
-- Current location is requested only after the user taps the location action. Navigation may request foreground location while in use.
-- Shop availability/coverage can be incomplete. A missing listing is not evidence that a place or people are absent.
-
-## Product limits
-
-This app does not validate route safety, detect crime, measure street lighting or surveillance, or guarantee that help is available. Do not add SOS, incident reporting, background tracking, crowd-sourced safety claims, or administrative features without a separately defined and approved design.
+- **Framework**: React Native 0.88 with **Expo SDK 58** & TypeScript (strict mode)
+- **Routing**: **Expo Router** file-based navigation
+- **Styling**: **NativeWind v5**
+- **Animations**: **React Native Reanimated 4**
+- **Maps**: `react-native-maps` with Google Maps custom dark JSON styling
+- **APIs**:
+  - Google Places API (New) Autocomplete & Nearby Search
+  - Google Routes API v2
+  - Google Geocoding API
+- **Auth**: `@supabase/supabase-js` (Auth only)
