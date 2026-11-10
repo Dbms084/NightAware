@@ -1,8 +1,9 @@
 /**
  * Geocoding & Places Search service.
  *
- * Uses Google Places (New) Autocomplete and Details API.
- * Provides instant typing suggestions (like Uber / Google Maps) and coordinate resolution on selection.
+ * Provides live, global search powered by OpenStreetMap Photon & Nominatim
+ * with Google Places API fallback.
+ * Allows searching any city, street, or landmark globally with zero hardcoded defaults.
  */
 
 import type { Coordinate } from '@/types/geo';
@@ -19,15 +20,14 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-/** Fast typing suggestion (returned immediately without waiting for coordinate lookup) */
 export type PlaceSuggestion = {
   id: string;
   name: string;
   secondaryText: string;
   fullAddress: string;
+  coordinate?: Coordinate;
 };
 
-/** Full search result with resolved coordinate */
 export type SearchResult = {
   id: string;
   name: string;
@@ -35,57 +35,107 @@ export type SearchResult = {
   coordinate: Coordinate;
 };
 
+export type QuickSuggestion = {
+  id: string;
+  name: string;
+  secondaryText: string;
+  icon: string;
+};
+
+export type QuickDestination = PlaceSuggestion & { coordinate?: Coordinate };
+
+/** Neutral suggestion type for search */
+export const QUICK_SUGGESTIONS: QuickSuggestion[] = [];
+
+// Backwards compatibility export
+export const POPULAR_DESTINATIONS: PlaceSuggestion[] = [];
+
 // ---------------------------------------------------------------------------
-// Popular / Demo Destinations (with exact coordinates)
+// Live OpenStreetMap Search (Photon & Nominatim)
 // ---------------------------------------------------------------------------
 
-export type QuickDestination = PlaceSuggestion & { coordinate: Coordinate };
+async function searchOsmPhoton(query: string, near?: Coordinate): Promise<PlaceSuggestion[]> {
+  try {
+    let url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=8`;
+    if (near) {
+      url += `&lat=${near.latitude}&lon=${near.longitude}`;
+    }
 
-export const POPULAR_DESTINATIONS: QuickDestination[] = [
-  {
-    id: 'demo-12th-main',
-    name: 'Home · 12th Main Road',
-    secondaryText: 'HAL 2nd Stage, Indiranagar, Bengaluru',
-    fullAddress: '12th Main Road, HAL 2nd Stage, Indiranagar, Bengaluru, Karnataka 560038',
-    coordinate: { latitude: 12.9650, longitude: 77.6450 },
-  },
-  {
-    id: 'demo-indiranagar-metro',
-    name: 'Indiranagar Metro Station',
-    secondaryText: 'CMH Road, Binnamangala, Indiranagar, Bengaluru',
-    fullAddress: 'Indiranagar Metro Station, CMH Road, Bengaluru, Karnataka 560038',
-    coordinate: { latitude: 12.9779, longitude: 77.6408 },
-  },
-  {
-    id: 'demo-bda-complex',
-    name: 'Indiranagar BDA Complex',
-    secondaryText: '100 Feet Road, HAL 2nd Stage, Bengaluru',
-    fullAddress: 'BDA Complex, 100 Feet Road, Indiranagar, Bengaluru, Karnataka 560038',
-    coordinate: { latitude: 12.9710, longitude: 77.6422 },
-  },
-  {
-    id: 'demo-koramangala-5th',
-    name: 'Koramangala 5th Block',
-    secondaryText: 'Near Sony World Junction, Bengaluru',
-    fullAddress: 'Koramangala 5th Block, Bengaluru, Karnataka 560095',
-    coordinate: { latitude: 12.9352, longitude: 77.6245 },
-  },
-  {
-    id: 'demo-mg-road',
-    name: 'MG Road Metro Station',
-    secondaryText: 'Mahatma Gandhi Road, Bengaluru',
-    fullAddress: 'MG Road Metro Station, Shivaji Nagar, Bengaluru, Karnataka 560001',
-    coordinate: { latitude: 12.9756, longitude: 77.6066 },
-  },
-];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!data.features || !Array.isArray(data.features)) return [];
+
+    return data.features.map((f: any, idx: number) => {
+      const p = f.properties || {};
+      const coords = f.geometry?.coordinates;
+      const name = p.name || p.street || p.city || 'Location';
+      const parts = [p.street, p.district, p.city, p.state, p.country].filter(Boolean);
+      const secondaryText = parts.slice(0, 3).join(', ');
+      const fullAddress = parts.join(', ') || name;
+
+      const coordinate =
+        coords && coords.length >= 2
+          ? { latitude: coords[1], longitude: coords[0] }
+          : undefined;
+
+      return {
+        id: coordinate ? `photon-${coordinate.latitude},${coordinate.longitude}` : `photon-idx-${idx}`,
+        name,
+        secondaryText,
+        fullAddress,
+        coordinate,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function searchOsmNominatim(query: string): Promise<PlaceSuggestion[]> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&addressdetails=1&limit=6`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'NightAware-App/1.0' },
+    });
+    clearTimeout(timer);
+
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+
+    return data.map((item: any) => {
+      const lat = parseFloat(item.lat);
+      const lon = parseFloat(item.lon);
+      const name = item.name || item.display_name.split(',')[0];
+      const secondaryText = item.display_name.split(',').slice(1, 4).join(',').trim();
+
+      return {
+        id: `nom-${lat},${lon}`,
+        name,
+        secondaryText,
+        fullAddress: item.display_name,
+        coordinate: { latitude: lat, longitude: lon },
+      };
+    });
+  } catch {
+    return [];
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Get instant autocomplete suggestions as user types (Uber / Google Maps style).
- * Fast, lightweight: doesn't block on fetching coordinates.
+ * Live search suggestions as user types anywhere in the world.
  */
 export async function searchPlaceSuggestions(
   query: string,
@@ -94,7 +144,15 @@ export async function searchPlaceSuggestions(
   const trimmed = query.trim();
   if (!trimmed || trimmed.length < 2) return [];
 
-  // Try Google Places (New) Autocomplete
+  // 1. Live OpenStreetMap Photon search (instant, global, handles typos)
+  const photonResults = await searchOsmPhoton(trimmed, near);
+  if (photonResults.length > 0) return photonResults;
+
+  // 2. Live OSM Nominatim search
+  const nominatimResults = await searchOsmNominatim(trimmed);
+  if (nominatimResults.length > 0) return nominatimResults;
+
+  // 3. Google Places API if configured
   if (isApiKeyConfigured()) {
     try {
       const predictions = await autocompleteSearch(trimmed, near);
@@ -106,87 +164,86 @@ export async function searchPlaceSuggestions(
           fullAddress: p.description,
         }));
       }
-    } catch {
-      // Fall through to local suggestions
-    }
+    } catch {}
   }
 
-  // Filter local popular places as fallback
-  const q = trimmed.toLowerCase();
-  return POPULAR_DESTINATIONS.filter(
-    (p) =>
-      p.name.toLowerCase().includes(q) ||
-      p.secondaryText.toLowerCase().includes(q) ||
-      p.fullAddress.toLowerCase().includes(q),
-  );
+  return [];
 }
 
 /**
- * Resolve a selected place suggestion to its exact GPS coordinate and full address.
- * Called when the user taps a suggestion from the list.
+ * Resolve a selected place suggestion to its GPS coordinate and address.
  */
 export async function resolvePlace(
   placeId: string,
 ): Promise<{ coordinate: Coordinate; address: string } | null> {
   if (!placeId) return null;
 
-  // Check local quick destinations first
-  const localMatch = POPULAR_DESTINATIONS.find((p) => p.id === placeId);
-  if (localMatch) {
-    return {
-      coordinate: localMatch.coordinate,
-      address: localMatch.fullAddress,
-    };
+  // Embedded coordinate in photon or nominatim id
+  if (placeId.startsWith('photon-') || placeId.startsWith('nom-')) {
+    const raw = placeId.replace(/^(photon-|nom-)/, '');
+    const [latStr, lonStr] = raw.split(',');
+    const lat = parseFloat(latStr);
+    const lon = parseFloat(lonStr);
+    if (!isNaN(lat) && !isNaN(lon)) {
+      return {
+        coordinate: { latitude: lat, longitude: lon },
+        address: '',
+      };
+    }
   }
 
-  // Fetch from Google Places API (New)
+  // Google Places API lookup
   if (isApiKeyConfigured()) {
     try {
       const result = await getPlaceCoordinate(placeId);
       if (result) return result;
-    } catch {
-      // Fall through
-    }
+    } catch {}
   }
 
   return null;
 }
 
 /**
- * Convert an address string to a coordinate.
- * Uses Google Geocoding API.
+ * Geocode address string to coordinate.
  */
 export async function geocode(address: string): Promise<Coordinate | null> {
+  const osmResults = await searchOsmNominatim(address);
+  if (osmResults.length > 0 && osmResults[0].coordinate) {
+    return osmResults[0].coordinate;
+  }
+
   if (isApiKeyConfigured()) {
     try {
       const result = await geocodeAddress(address);
       if (result) return result.coordinate;
-    } catch {
-      // Fall through
-    }
+    } catch {}
   }
   return null;
 }
 
 /**
- * Convert a coordinate to a human-readable address.
- * Uses Google Reverse Geocoding API.
+ * Reverse geocode coordinate to address.
  */
-export async function reverseGeocode(
-  coordinate: Coordinate,
-): Promise<string | null> {
+export async function reverseGeocode(coordinate: Coordinate): Promise<string | null> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coordinate.latitude}&lon=${coordinate.longitude}`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'NightAware-App/1.0' } });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.display_name) return data.display_name;
+    }
+  } catch {}
+
   if (isApiKeyConfigured()) {
     try {
       const address = await reverseGeocodeCoord(coordinate);
       if (address) return address;
-    } catch {
-      // Fall through
-    }
+    } catch {}
   }
   return null;
 }
 
-/** Backwards-compatible searchPlaces */
+/** Backwards compatible searchPlaces */
 export async function searchPlaces(
   query: string,
   near?: Coordinate,
@@ -194,14 +251,23 @@ export async function searchPlaces(
   const suggestions = await searchPlaceSuggestions(query, near);
   const results: SearchResult[] = [];
   for (const s of suggestions.slice(0, 5)) {
-    const resolved = await resolvePlace(s.id);
-    if (resolved) {
+    if (s.coordinate) {
       results.push({
         id: s.id,
         name: s.name,
-        address: resolved.address,
-        coordinate: resolved.coordinate,
+        address: s.fullAddress,
+        coordinate: s.coordinate,
       });
+    } else {
+      const resolved = await resolvePlace(s.id);
+      if (resolved) {
+        results.push({
+          id: s.id,
+          name: s.name,
+          address: resolved.address || s.fullAddress,
+          coordinate: resolved.coordinate,
+        });
+      }
     }
   }
   return results;

@@ -1,15 +1,6 @@
 /**
  * Shared geospatial domain types for NightAware.
- *
- * These types form the integration contract between:
- *   - Member 2 (Geospatial Mapping)
- *   - Member 3 (Incident Reporting)
- *   - Member 4 (AI Safety Prediction)
- *   - Member 5 (Route Optimization)
- *   - Member 6 (Backend & Database)
- *
- * Keep this file as the single source of truth for all geo-related types.
- * Do not duplicate these definitions in feature modules.
+ * Single source of truth for all geo, POI, scoring, and routing types.
  */
 
 // ---------------------------------------------------------------------------
@@ -54,14 +45,11 @@ export type JourneyRequest = {
 };
 
 // ---------------------------------------------------------------------------
-// Places
+// Places & POIs
 // ---------------------------------------------------------------------------
 
 /**
  * Categories of points of interest relevant to nighttime safety.
- *
- * When adding a category, also update mock data and any UI category-filter
- * components that enumerate this union.
  */
 export type PlaceCategory =
   | 'hospital'
@@ -71,21 +59,23 @@ export type PlaceCategory =
   | 'transport'
   | 'help_point'
   | 'police'
-  | 'cctv';
+  | 'cctv'
+  | 'streetlight';
 
 /** Human-readable labels for each PlaceCategory. */
 export const PLACE_CATEGORY_LABELS: Record<PlaceCategory, string> = {
-  hospital: 'Hospital',
-  pharmacy: 'Pharmacy / Medical Store',
-  petrol_station: 'Petrol Station',
-  shop_food: 'Shop / Food',
-  transport: 'Transport',
-  help_point: 'Help Point',
-  police: 'Police Station',
-  cctv: 'CCTV Camera',
+  hospital: 'Hospital / Emergency Medical',
+  pharmacy: '24/7 Pharmacy / Medical Store',
+  petrol_station: 'Petrol Pump & Convenience',
+  shop_food: 'Shop / Restaurant / Cafe',
+  transport: 'Public Transit / Metro Station',
+  help_point: 'Verified Help Point',
+  police: 'Police Station / Outpost',
+  cctv: 'Public CCTV Infrastructure',
+  streetlight: 'Verified Street Lighting Zone',
 };
 
-/** Icon name (emoji fallback) for each PlaceCategory. */
+/** Icon / emoji for each PlaceCategory. */
 export const PLACE_CATEGORY_ICONS: Record<PlaceCategory, string> = {
   hospital: '🏥',
   pharmacy: '💊',
@@ -95,7 +85,29 @@ export const PLACE_CATEGORY_ICONS: Record<PlaceCategory, string> = {
   help_point: '🆘',
   police: '🚔',
   cctv: '📷',
+  streetlight: '💡',
 };
+
+/** Markers color mapping matching Section 5 of specification */
+export const PLACE_MARKER_COLORS: Record<PlaceCategory, string> = {
+  hospital: '#ef4444',       // Red
+  pharmacy: '#a855f7',       // Purple
+  petrol_station: '#f97316', // Orange
+  shop_food: '#22c55e',      // Green (when open)
+  transport: '#06b6d4',      // Cyan
+  help_point: '#ec4899',     // Pink
+  police: '#3b82f6',         // Blue
+  cctv: '#64748b',           // Slate / Distinct
+  streetlight: '#eab308',    // Amber / Yellow
+};
+
+/** Arrival status at an establishment based on user's journey progress */
+export type ArrivalStatus =
+  | 'open_at_arrival'
+  | 'closing_soon'
+  | 'closed_at_arrival'
+  | 'open_24_7'
+  | 'unknown';
 
 /** A point of interest relevant to route safety. */
 export type Place = {
@@ -103,102 +115,194 @@ export type Place = {
   name: string;
   coordinate: Coordinate;
   category: PlaceCategory;
-  /**
-   * Whether this place is expected to be open at the journey's departure time.
-   * - `true`  — confirmed/likely open
-   * - `false` — confirmed/likely closed
-   * - `null`  — hours unknown or unavailable
-   */
+  address?: string;
+  phone?: string;
+  is24_7?: boolean;
+  openTime?: string;
+  closeTime?: string;
+  /** Distance in metres from start of route */
+  distanceFromStartMeters?: number;
+  /** Perpendicular distance from route corridor */
+  distanceFromRouteMeters?: number;
+  /** Estimated arrival time (e.g. "22:18") */
+  estimatedArrivalTime?: string;
+  /** Opening status at estimated arrival */
+  arrivalStatus?: ArrivalStatus;
+  /** Legacy flag */
   openAtJourneyTime: boolean | null;
-  /** Origin of the data: 'mock' for demo fixtures, 'provider' for a real API. */
-  dataSource: 'mock' | 'provider';
+  /** Origin of data */
+  dataSource: 'mock' | 'provider' | 'supabase';
 };
 
 // ---------------------------------------------------------------------------
-// Routes
+// Scoring & Parameters
 // ---------------------------------------------------------------------------
 
-/** A contiguous segment of a route, optionally scored for safety. */
+/**
+ * Configurable weights for the 9 Night Activity Score parameters (total = 100).
+ */
+export interface ScoringWeights {
+  openShops: number;              // 20
+  openingHours: number;           // 15
+  essentialServices: number;      // 10
+  activityContinuity: number;     // 15
+  mainRoadAccessibility: number;  // 10
+  helpPoints: number;             // 10
+  streetLighting: number;         // 10
+  cctvCoverage: number;           // 5
+  publicTransport: number;        // 5
+}
+
+export const DEFAULT_SCORING_WEIGHTS: ScoringWeights = {
+  openShops: 20,
+  openingHours: 15,
+  essentialServices: 10,
+  activityContinuity: 15,
+  mainRoadAccessibility: 10,
+  helpPoints: 10,
+  streetLighting: 10,
+  cctvCoverage: 5,
+  publicTransport: 5,
+};
+
+/** Category-wise score breakdown out of 100 points */
+export type ScoreBreakdown = {
+  openShopsScore: number;             // out of weights.openShops (20)
+  openingHoursScore: number;          // out of weights.openingHours (15)
+  essentialServicesScore: number;     // out of weights.essentialServices (10)
+  activityContinuityScore: number;    // out of weights.activityContinuity (15)
+  mainRoadScore: number;              // out of weights.mainRoadAccessibility (10)
+  helpPointsScore: number;            // out of weights.helpPoints (10)
+  streetLightingScore: number;        // out of weights.streetLighting (10)
+  cctvScore: number;                  // out of weights.cctvCoverage (5)
+  publicTransportScore: number;       // out of weights.publicTransport (5)
+  total: number;                      // 0–100
+};
+
+// ---------------------------------------------------------------------------
+// Routes & Heatmap
+// ---------------------------------------------------------------------------
+
+/** Heatmap activity color */
+export type HeatmapColor = '#4ADE80' | '#FACC15' | '#FF9400' | '#F87171';
+
+/** Segment evaluated for heatmaps (100–200m) */
+export type RouteHeatmapSegment = {
+  startIndex: number;
+  endIndex: number;
+  coordinates: Coordinate[];
+  activityScore: number;
+  color: HeatmapColor;
+  nearbyOpenCount: number;
+  isIsolated: boolean;
+};
+
+/** Candidate route profiles */
+export type RouteProfileType = 'safest' | 'fastest' | 'balanced';
+
+/** Contiguous segment of a route */
 export type RouteSegment = {
   coordinates: Coordinate[];
-  /** Per-segment safety/activity score (0–100), or undefined if not computed. */
   safetyScore?: number;
 };
 
 /**
- * A candidate route between origin and destination.
- *
- * Scores and place counts use `number | null` so the UI can distinguish
- * between "zero" (computed, result is 0) and "unavailable" (not computed or
- * data insufficient).
+ * Full candidate route with intelligent safety characteristics.
  */
 export type RouteOption = {
   id: string;
-  /** Display label, e.g. "More nearby activity", "Fastest route". */
+  /** Display label e.g. "Safer profile", "Balanced", "Fastest" */
   label: string;
-  /** Ordered waypoints defining the route polyline. */
+  /** Profile classification */
+  profileType: RouteProfileType;
+  /** Polyline coordinates */
   coordinates: Coordinate[];
-  /** Optional per-segment breakdown for detailed safety visualisation. */
+  /** Segment-by-segment activity breakdown for heatmap display */
+  heatmapSegments: RouteHeatmapSegment[];
+  /** Legacy segments */
   segments?: RouteSegment[];
-  /** Total route distance in metres. */
+  /** Total route distance in metres */
   distanceMeters: number;
-  /** Estimated travel time in minutes for the selected travel mode. */
+  /** Estimated travel time in minutes */
   durationMinutes: number;
-  /** Extra minutes compared to the fastest route (0 for the fastest). */
+  /** Extra minutes compared to the fastest alternative */
   extraMinutes: number;
-  /**
-   * Night Activity Score (0–100).
-   * An activity proxy, NOT a safety guarantee.
-   * `null` means data is insufficient to compute a score.
-   */
-  nightActivityScore: number | null;
-  /** Count of POIs along the route expected to be open at journey time. */
-  placesOpenNearRoute: number | null;
-  /** Longest gap (metres) between consecutive open help points. */
-  longestStretchWithoutOpenHelpMeters: number | null;
-  /** Longest stretch (metres) through a low-activity zone. */
-  longestLowActivityStretchMeters: number | null;
-  /** Whether this data comes from mock fixtures. */
+  /** Night Activity Score (0–100) */
+  nightActivityScore: number;
+  /** Detailed parameter-by-parameter score breakdown */
+  scoreBreakdown: ScoreBreakdown;
+  /** Short evidence summary e.g. "12 open places · longest quiet stretch 90 m" */
+  routeEvidence: string;
+  /** Longest quiet/isolated stretch in metres */
+  longestQuietStretchMeters: number;
+  /** Percentage of route along major roads */
+  mainRoadPercentage: number;
+  /** Verified lighting coverage percentage */
+  lightingCoveragePercentage: number;
+  /** POIs along this route */
+  establishments: Place[];
+  /** Counts of mapped infrastructure */
+  placesOpenNearRoute: number;
+  closedPlacesCount: number;
+  twentyFourSevenCount: number;
+  pharmaciesCount: number;
+  petrolPumpsCount: number;
+  policeCount: number;
+  hospitalsCount: number;
+  publicTransportCount: number;
+  cctvCount: number;
+  /** Legacy fields */
+  longestStretchWithoutOpenHelpMeters?: number | null;
+  longestLowActivityStretchMeters?: number | null;
   isMock: boolean;
 };
 
 // ---------------------------------------------------------------------------
-// Safety
+// Safety Zones & Reports
 // ---------------------------------------------------------------------------
 
-/** Risk level for a geographic zone. */
 export type RiskLevel = 'low' | 'medium' | 'high';
 
-/** A circular zone with an assessed risk/activity level. */
 export type SafetyZone = {
   id: string;
   coordinate: Coordinate;
-  /** Radius of influence in metres. */
   radiusMeters: number;
-  /** Assessed risk level — higher risk = lower nighttime activity. */
   riskLevel: RiskLevel;
-  /** Human-readable reason for the assessment. */
   reason: string;
-  /** Whether this data comes from mock fixtures. */
   isMock: boolean;
 };
 
-// ---------------------------------------------------------------------------
-// Map presentation helpers
-// ---------------------------------------------------------------------------
-
-/** Colours associated with risk levels for map overlays. */
-export const RISK_LEVEL_COLORS: Record<RiskLevel, string> = {
-  low: '#4ADE80',    // green — higher activity / more facilities
-  medium: '#FACC15', // yellow — moderate
-  high: '#F87171',   // red — lower activity / fewer facilities
+export type CommunityReport = {
+  id?: string;
+  reportType: 'poor_lighting' | 'isolated_stretch' | 'harassment' | 'closed_early' | 'other';
+  description: string;
+  latitude: number;
+  longitude: number;
+  severity: 'low' | 'medium' | 'high';
+  createdAt?: string;
 };
 
-/** Default map region centred on Bengaluru · Indiranagar. */
+export type TrustedContact = {
+  id: string;
+  name: string;
+  phone: string;
+  relationship: string;
+  isSos: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// Map Defaults
+// ---------------------------------------------------------------------------
+
+export const RISK_LEVEL_COLORS: Record<RiskLevel, string> = {
+  low: '#4ADE80',    // green
+  medium: '#FACC15', // yellow
+  high: '#F87171',   // red
+};
+
 export const DEFAULT_MAP_REGION: MapRegion = {
   latitude: 12.9716,
   longitude: 77.6412,
   latitudeDelta: 0.015,
   longitudeDelta: 0.015,
 };
-

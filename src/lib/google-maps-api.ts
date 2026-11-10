@@ -11,7 +11,11 @@ import type { Coordinate, PlaceCategory, Place } from '@/types/geo';
 // Config
 // ---------------------------------------------------------------------------
 
-const API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? '';
+const API_KEY = (
+  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
+  process.env.GOOGLE_MAPS_API_KEY ||
+  ''
+).trim();
 
 const ENDPOINTS = {
   geocoding: 'https://maps.googleapis.com/maps/api/geocode/json',
@@ -61,6 +65,7 @@ export const CATEGORY_TO_GOOGLE_TYPES: Record<PlaceCategory, string[]> = {
   help_point: ['fire_station', 'local_government_office'],
   police: ['police'],
   cctv: [],
+  streetlight: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -225,6 +230,67 @@ export const ALL_NIGHT_TYPES: string[] = [
   'bus_station',
   'police',
 ];
+
+/**
+ * Search essential night establishments around a coordinate using Places API (New) TextSearch.
+ * Highly reliable across all global cities for finding 24/7 pharmacies, hospitals, police,
+ * petrol pumps, and open convenience stores.
+ */
+export async function searchNearbyNightPois(
+  coordinate: Coordinate,
+  radiusMeters: number = 750,
+): Promise<Place[]> {
+  if (!API_KEY) return [];
+
+  try {
+    const url = 'https://places.googleapis.com/v1/places:searchText';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': API_KEY,
+        'X-Goog-FieldMask':
+          'places.id,places.displayName,places.primaryType,places.types,places.formattedAddress,places.location,places.regularOpeningHours,places.nationalPhoneNumber',
+      },
+      body: JSON.stringify({
+        textQuery: 'pharmacy hospital police station petrol pump supermarket convenience store',
+        maxResultCount: 20,
+        locationBias: {
+          circle: {
+            center: { latitude: coordinate.latitude, longitude: coordinate.longitude },
+            radius: radiusMeters,
+          },
+        },
+      }),
+    });
+
+    const data = await res.json();
+    if (!data.places || !Array.isArray(data.places)) return [];
+
+    return data.places.map((p: any) => {
+      const allTypes = (p.types || []).concat(p.primaryType || '');
+      const category = mapGoogleTypeToCategory(allTypes);
+      const isOpen = p.regularOpeningHours?.openNow ?? null;
+
+      return {
+        id: p.id ?? `place-${Math.random().toString(36).slice(2, 8)}`,
+        name: p.displayName?.text ?? 'Open Establishment',
+        coordinate: {
+          latitude: p.location?.latitude ?? coordinate.latitude,
+          longitude: p.location?.longitude ?? coordinate.longitude,
+        },
+        category,
+        address: p.formattedAddress || undefined,
+        phone: p.nationalPhoneNumber || undefined,
+        is24_7: Boolean(p.regularOpeningHours?.openNow),
+        openAtJourneyTime: isOpen,
+        dataSource: 'provider' as const,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Fetch nearby places across multiple types in a SINGLE Places API (New) request.
@@ -450,5 +516,10 @@ export function decodePolyline(encoded: string): Coordinate[] {
 
 /** Check if API key is configured */
 export function isApiKeyConfigured(): boolean {
-  return API_KEY.length > 0;
+  return Boolean(
+    API_KEY &&
+      API_KEY.length > 0 &&
+      API_KEY !== 'YOUR_GOOGLE_MAPS_API_KEY' &&
+      API_KEY !== 'your-google-maps-api-key-here',
+  );
 }

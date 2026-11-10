@@ -25,10 +25,12 @@ import type { Coordinate } from '@/types/geo';
 import {
   searchPlaceSuggestions,
   resolvePlace,
-  POPULAR_DESTINATIONS,
+  QUICK_SUGGESTIONS,
   type PlaceSuggestion,
+  type QuickSuggestion,
   type QuickDestination,
 } from '@/features/location/services/geocoding-service';
+import { PoiRowSkeleton } from '@/components/ui/Skeleton';
 
 export type SearchField = 'start' | 'destination';
 
@@ -327,9 +329,15 @@ export function LocationSearchModal({
 
         {/* Suggestions List */}
         <View style={styles.listContainer}>
-          {showPopular ? (
+          {isSearching ? (
+            <View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
+              <PoiRowSkeleton />
+              <PoiRowSkeleton />
+              <PoiRowSkeleton />
+            </View>
+          ) : showPopular ? (
             <FlatList
-              data={POPULAR_DESTINATIONS}
+              data={QUICK_SUGGESTIONS}
               keyExtractor={(item) => item.id}
               keyboardShouldPersistTaps="always"
               showsVerticalScrollIndicator={false}
@@ -365,15 +373,29 @@ export function LocationSearchModal({
                   {/* Section divider */}
                   <View style={styles.listHeader}>
                     <Text style={styles.listHeaderTitle}>
-                      {activeField === 'start' ? 'POPULAR START POINTS' : 'SUGGESTED DESTINATIONS'}
+                      {activeField === 'start' ? 'SEARCH START LOCATION' : 'SEARCH DESTINATION'}
                     </Text>
-                    <Text style={styles.listHeaderSubtitle}>Popular night areas in Bengaluru</Text>
+                    <Text style={styles.listHeaderSubtitle}>Search any city, neighborhood, street, or landmark</Text>
                   </View>
+                </View>
+              }
+              ListEmptyComponent={
+                <View style={{ alignItems: 'center', justifyContent: 'center', paddingVertical: 40, paddingHorizontal: 24 }}>
+                  <Text style={{ fontSize: 32, marginBottom: 12 }}>🔍</Text>
+                  <Text style={{ color: '#f5f6f7', fontSize: 16, fontWeight: '600', textAlign: 'center' }}>
+                    {activeField === 'start' ? 'Where are you starting from?' : 'Where do you want to go tonight?'}
+                  </Text>
+                  <Text style={{ color: '#85909b', fontSize: 13, textAlign: 'center', marginTop: 6, lineHeight: 18 }}>
+                    Type at least 2 characters above to search any street, landmark, metro station, or venue.
+                  </Text>
                 </View>
               }
               renderItem={({ item }) => (
                 <Pressable
-                  onPress={() => handleSelectPlace(item)}
+                  onPress={() => {
+                    setQuery(item.name);
+                    handleChangeText(item.name);
+                  }}
                   style={({ pressed }) => [
                     styles.suggestionItem,
                     pressed && styles.suggestionItemPressed,
@@ -381,7 +403,7 @@ export function LocationSearchModal({
                   accessibilityRole="button"
                 >
                   <View style={styles.iconCircle}>
-                    <Text style={styles.iconText}>📍</Text>
+                    <Text style={styles.iconText}>{item.icon}</Text>
                   </View>
                   <View style={styles.suggestionTextWrap}>
                     <Text style={styles.suggestionName} numberOfLines={1}>
@@ -391,11 +413,7 @@ export function LocationSearchModal({
                       {item.secondaryText}
                     </Text>
                   </View>
-                  {resolvingId === item.id ? (
-                    <ActivityIndicator size="small" color="#ff9400" />
-                  ) : (
-                    <Text style={styles.chevron}>→</Text>
-                  )}
+                  <Text style={styles.chevron}>🔍</Text>
                 </Pressable>
               )}
             />

@@ -1,164 +1,230 @@
 /**
  * Mock route options between Indiranagar Metro (Exit A) and 12th Main Road.
- *
- * Waypoints follow real Indiranagar streets extracted from OpenStreetMap
- * so polylines render as plausible walking routes, not straight lines.
- *
- * These are DEMO fixtures — all marked isMock: true.
+ * Formatted with full Night Activity Score indicators and heatmap segments.
  */
 
-import type { RouteOption } from '@/types/geo';
+import type { RouteOption, RouteHeatmapSegment } from '@/types/geo';
+import { MOCK_PLACES } from './mock-places';
 
 // ---------------------------------------------------------------------------
-// Route A — "More nearby activity"
-// Via 100 Feet Road → BDA Complex → Defence Colony → 12th Main
-// Longer but passes more open shops, restaurants, and CCTV coverage.
+// Route A — "Safer profile" (via 100 Feet Road & BDA Complex)
 // ---------------------------------------------------------------------------
+
+const coordsA = [
+  { latitude: 12.9779, longitude: 77.6408 },
+  { latitude: 12.9770, longitude: 77.6407 },
+  { latitude: 12.9758, longitude: 77.6405 },
+  { latitude: 12.9750, longitude: 77.6408 },
+  { latitude: 12.9742, longitude: 77.6412 },
+  { latitude: 12.9730, longitude: 77.6415 },
+  { latitude: 12.9720, longitude: 77.6418 },
+  { latitude: 12.9716, longitude: 77.6420 },
+  { latitude: 12.9710, longitude: 77.6422 },
+  { latitude: 12.9705, longitude: 77.6425 },
+  { latitude: 12.9698, longitude: 77.6430 },
+  { latitude: 12.9690, longitude: 77.6435 },
+  { latitude: 12.9682, longitude: 77.6440 },
+  { latitude: 12.9675, longitude: 77.6443 },
+  { latitude: 12.9668, longitude: 77.6446 },
+  { latitude: 12.9660, longitude: 77.6448 },
+  { latitude: 12.9655, longitude: 77.6449 },
+  { latitude: 12.9650, longitude: 77.6450 },
+];
+
+const heatmapsA: RouteHeatmapSegment[] = [
+  { startIndex: 0, endIndex: 4, coordinates: coordsA.slice(0, 5), activityScore: 88, color: '#4ADE80', nearbyOpenCount: 4, isIsolated: false },
+  { startIndex: 4, endIndex: 8, coordinates: coordsA.slice(4, 9), activityScore: 84, color: '#4ADE80', nearbyOpenCount: 5, isIsolated: false },
+  { startIndex: 8, endIndex: 12, coordinates: coordsA.slice(8, 13), activityScore: 78, color: '#4ADE80', nearbyOpenCount: 3, isIsolated: false },
+  { startIndex: 12, endIndex: 17, coordinates: coordsA.slice(12, 18), activityScore: 72, color: '#FACC15', nearbyOpenCount: 2, isIsolated: false },
+];
 
 const routeA: RouteOption = {
   id: 'route-a',
-  label: 'More nearby activity',
-  distanceMeters: 2820,
-  durationMinutes: 12,
-  extraMinutes: 4,
-  nightActivityScore: 72,
-  placesOpenNearRoute: 14,
-  longestStretchWithoutOpenHelpMeters: 320,
-  longestLowActivityStretchMeters: 180,
+  label: 'Safer profile',
+  profileType: 'safest',
+  distanceMeters: 1800,
+  durationMinutes: 24,
+  extraMinutes: 6,
+  nightActivityScore: 82,
+  scoreBreakdown: {
+    openShopsScore: 17,
+    openingHoursScore: 13,
+    essentialServicesScore: 9,
+    activityContinuityScore: 14,
+    mainRoadScore: 9,
+    helpPointsScore: 8,
+    streetLightingScore: 8,
+    cctvScore: 4,
+    publicTransportScore: 5,
+    total: 82,
+  },
+  routeEvidence: '12 open places · longest quiet stretch 90 m',
+  longestQuietStretchMeters: 90,
+  mainRoadPercentage: 88,
+  lightingCoveragePercentage: 85,
+  establishments: MOCK_PLACES.slice(0, 14),
+  placesOpenNearRoute: 12,
+  closedPlacesCount: 2,
+  twentyFourSevenCount: 4,
+  pharmaciesCount: 3,
+  petrolPumpsCount: 1,
+  policeCount: 1,
+  hospitalsCount: 2,
+  publicTransportCount: 2,
+  cctvCount: 3,
+  heatmapSegments: heatmapsA,
+  coordinates: coordsA,
   isMock: true,
-  coordinates: [
-    // Start — Indiranagar Metro Exit A
-    { latitude: 12.9779, longitude: 77.6408 },
-    // South on CMH Road
-    { latitude: 12.9770, longitude: 77.6407 },
-    { latitude: 12.9758, longitude: 77.6405 },
-    // Turn east onto 100 Feet Road
-    { latitude: 12.9750, longitude: 77.6408 },
-    { latitude: 12.9742, longitude: 77.6412 },
-    // Along 100 Feet Road (commercial stretch)
-    { latitude: 12.9730, longitude: 77.6415 },
-    { latitude: 12.9720, longitude: 77.6418 },
-    { latitude: 12.9716, longitude: 77.6420 },
-    // Past BDA Complex
-    { latitude: 12.9710, longitude: 77.6422 },
-    { latitude: 12.9705, longitude: 77.6425 },
-    // Turn south-east into Defence Colony
-    { latitude: 12.9698, longitude: 77.6430 },
-    { latitude: 12.9690, longitude: 77.6435 },
-    { latitude: 12.9682, longitude: 77.6440 },
-    // Through Defence Colony main road
-    { latitude: 12.9675, longitude: 77.6443 },
-    { latitude: 12.9668, longitude: 77.6446 },
-    // Final stretch — 12th Main Road
-    { latitude: 12.9660, longitude: 77.6448 },
-    { latitude: 12.9655, longitude: 77.6449 },
-    // Destination
-    { latitude: 12.9650, longitude: 77.6450 },
-  ],
 };
 
 // ---------------------------------------------------------------------------
-// Route B — "Fastest route"
-// Via 12th Main direct cut through residential lanes.
-// Shorter but fewer open businesses and help points at night.
+// Route C — "Balanced" (100 Feet Road → 12th Main)
 // ---------------------------------------------------------------------------
 
-const routeB: RouteOption = {
-  id: 'route-b',
-  label: 'Fastest route',
-  distanceMeters: 2080,
-  durationMinutes: 8,
-  extraMinutes: 0,
-  nightActivityScore: 45,
-  placesOpenNearRoute: 6,
-  longestStretchWithoutOpenHelpMeters: 780,
-  longestLowActivityStretchMeters: 520,
-  isMock: true,
-  coordinates: [
-    // Start — Indiranagar Metro Exit A
-    { latitude: 12.9779, longitude: 77.6408 },
-    // South on CMH Road briefly
-    { latitude: 12.9770, longitude: 77.6407 },
-    // Cut east onto 6th Cross
-    { latitude: 12.9765, longitude: 77.6415 },
-    { latitude: 12.9758, longitude: 77.6422 },
-    // South through residential 1st Stage lanes
-    { latitude: 12.9748, longitude: 77.6428 },
-    { latitude: 12.9738, longitude: 77.6432 },
-    // Continue south through quiet lanes
-    { latitude: 12.9725, longitude: 77.6436 },
-    { latitude: 12.9712, longitude: 77.6440 },
-    // Into HAL 2nd Stage residential area
-    { latitude: 12.9700, longitude: 77.6443 },
-    { latitude: 12.9688, longitude: 77.6446 },
-    { latitude: 12.9675, longitude: 77.6448 },
-    // Final approach
-    { latitude: 12.9662, longitude: 77.6449 },
-    // Destination
-    { latitude: 12.9650, longitude: 77.6450 },
-  ],
-};
+const coordsC = [
+  { latitude: 12.9779, longitude: 77.6408 },
+  { latitude: 12.9770, longitude: 77.6407 },
+  { latitude: 12.9758, longitude: 77.6405 },
+  { latitude: 12.9748, longitude: 77.6403 },
+  { latitude: 12.9738, longitude: 77.6400 },
+  { latitude: 12.9728, longitude: 77.6398 },
+  { latitude: 12.9720, longitude: 77.6400 },
+  { latitude: 12.9712, longitude: 77.6405 },
+  { latitude: 12.9700, longitude: 77.6412 },
+  { latitude: 12.9692, longitude: 77.6420 },
+  { latitude: 12.9685, longitude: 77.6428 },
+  { latitude: 12.9675, longitude: 77.6435 },
+  { latitude: 12.9668, longitude: 77.6440 },
+  { latitude: 12.9660, longitude: 77.6445 },
+  { latitude: 12.9650, longitude: 77.6450 },
+];
 
-// ---------------------------------------------------------------------------
-// Route C — "Balanced"
-// Via 100 Feet Road → 12th Main → HAL 2nd Stage.
-// Middle ground between activity coverage and travel time.
-// ---------------------------------------------------------------------------
+const heatmapsC: RouteHeatmapSegment[] = [
+  { startIndex: 0, endIndex: 4, coordinates: coordsC.slice(0, 5), activityScore: 82, color: '#4ADE80', nearbyOpenCount: 3, isIsolated: false },
+  { startIndex: 4, endIndex: 8, coordinates: coordsC.slice(4, 9), activityScore: 68, color: '#FACC15', nearbyOpenCount: 2, isIsolated: false },
+  { startIndex: 8, endIndex: 11, coordinates: coordsC.slice(8, 12), activityScore: 62, color: '#FACC15', nearbyOpenCount: 2, isIsolated: false },
+  { startIndex: 11, endIndex: 14, coordinates: coordsC.slice(11, 15), activityScore: 55, color: '#FF9400', nearbyOpenCount: 1, isIsolated: false },
+];
 
 const routeC: RouteOption = {
   id: 'route-c',
   label: 'Balanced',
-  distanceMeters: 2400,
-  durationMinutes: 10,
-  extraMinutes: 2,
-  nightActivityScore: 62,
-  placesOpenNearRoute: 10,
-  longestStretchWithoutOpenHelpMeters: 480,
-  longestLowActivityStretchMeters: 340,
+  profileType: 'balanced',
+  distanceMeters: 1600,
+  durationMinutes: 21,
+  extraMinutes: 3,
+  nightActivityScore: 70,
+  scoreBreakdown: {
+    openShopsScore: 14,
+    openingHoursScore: 11,
+    essentialServicesScore: 7,
+    activityContinuityScore: 11,
+    mainRoadScore: 7,
+    helpPointsScore: 6,
+    streetLightingScore: 6,
+    cctvScore: 3,
+    publicTransportScore: 4,
+    total: 70,
+  },
+  routeEvidence: '8 open places · longest quiet stretch 210 m',
+  longestQuietStretchMeters: 210,
+  mainRoadPercentage: 72,
+  lightingCoveragePercentage: 70,
+  establishments: MOCK_PLACES.slice(0, 10),
+  placesOpenNearRoute: 8,
+  closedPlacesCount: 2,
+  twentyFourSevenCount: 2,
+  pharmaciesCount: 2,
+  petrolPumpsCount: 1,
+  policeCount: 1,
+  hospitalsCount: 1,
+  publicTransportCount: 1,
+  cctvCount: 2,
+  heatmapSegments: heatmapsC,
+  coordinates: coordsC,
   isMock: true,
-  coordinates: [
-    // Start — Indiranagar Metro Exit A
-    { latitude: 12.9779, longitude: 77.6408 },
-    // South on CMH Road
-    { latitude: 12.9770, longitude: 77.6407 },
-    { latitude: 12.9758, longitude: 77.6405 },
-    // West onto 100 Feet Road
-    { latitude: 12.9748, longitude: 77.6403 },
-    // Along 100 Feet Road (shorter stretch)
-    { latitude: 12.9738, longitude: 77.6400 },
-    { latitude: 12.9728, longitude: 77.6398 },
-    // Turn south onto 12th Main
-    { latitude: 12.9720, longitude: 77.6400 },
-    { latitude: 12.9712, longitude: 77.6405 },
-    { latitude: 12.9700, longitude: 77.6412 },
-    // Continue 12th Main south
-    { latitude: 12.9692, longitude: 77.6420 },
-    { latitude: 12.9685, longitude: 77.6428 },
-    // Merge onto HAL 2nd Stage main road
-    { latitude: 12.9675, longitude: 77.6435 },
-    { latitude: 12.9668, longitude: 77.6440 },
-    { latitude: 12.9660, longitude: 77.6445 },
-    // Destination
-    { latitude: 12.9650, longitude: 77.6450 },
-  ],
+};
+
+// ---------------------------------------------------------------------------
+// Route B — "Fastest" (Direct cut through quiet residential lanes)
+// ---------------------------------------------------------------------------
+
+const coordsB = [
+  { latitude: 12.9779, longitude: 77.6408 },
+  { latitude: 12.9770, longitude: 77.6407 },
+  { latitude: 12.9765, longitude: 77.6415 },
+  { latitude: 12.9758, longitude: 77.6422 },
+  { latitude: 12.9748, longitude: 77.6428 },
+  { latitude: 12.9738, longitude: 77.6432 },
+  { latitude: 12.9725, longitude: 77.6436 },
+  { latitude: 12.9712, longitude: 77.6440 },
+  { latitude: 12.9700, longitude: 77.6443 },
+  { latitude: 12.9688, longitude: 77.6446 },
+  { latitude: 12.9675, longitude: 77.6448 },
+  { latitude: 12.9662, longitude: 77.6449 },
+  { latitude: 12.9650, longitude: 77.6450 },
+];
+
+const heatmapsB: RouteHeatmapSegment[] = [
+  { startIndex: 0, endIndex: 3, coordinates: coordsB.slice(0, 4), activityScore: 75, color: '#4ADE80', nearbyOpenCount: 2, isIsolated: false },
+  { startIndex: 3, endIndex: 6, coordinates: coordsB.slice(3, 7), activityScore: 42, color: '#FF9400', nearbyOpenCount: 1, isIsolated: false },
+  { startIndex: 6, endIndex: 10, coordinates: coordsB.slice(6, 11), activityScore: 22, color: '#F87171', nearbyOpenCount: 0, isIsolated: true },
+  { startIndex: 10, endIndex: 12, coordinates: coordsB.slice(10, 13), activityScore: 50, color: '#FACC15', nearbyOpenCount: 1, isIsolated: false },
+];
+
+const routeB: RouteOption = {
+  id: 'route-b',
+  label: 'Fastest',
+  profileType: 'fastest',
+  distanceMeters: 1400,
+  durationMinutes: 18,
+  extraMinutes: 0,
+  nightActivityScore: 54,
+  scoreBreakdown: {
+    openShopsScore: 9,
+    openingHoursScore: 8,
+    essentialServicesScore: 5,
+    activityContinuityScore: 6,
+    mainRoadScore: 5,
+    helpPointsScore: 4,
+    streetLightingScore: 5,
+    cctvScore: 2,
+    publicTransportScore: 3,
+    total: 54,
+  },
+  routeEvidence: '5 open places · 420 m isolated stretch',
+  longestQuietStretchMeters: 420,
+  mainRoadPercentage: 42,
+  lightingCoveragePercentage: 45,
+  establishments: MOCK_PLACES.slice(0, 6),
+  placesOpenNearRoute: 5,
+  closedPlacesCount: 1,
+  twentyFourSevenCount: 1,
+  pharmaciesCount: 1,
+  petrolPumpsCount: 0,
+  policeCount: 0,
+  hospitalsCount: 1,
+  publicTransportCount: 1,
+  cctvCount: 1,
+  heatmapSegments: heatmapsB,
+  coordinates: coordsB,
+  isMock: true,
 };
 
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
-/** All demo route options, ordered by nightActivityScore descending. */
+/** All demo route options, ordered: Safest, Balanced, Fastest */
 export const MOCK_ROUTES: RouteOption[] = [routeA, routeC, routeB];
 
-/** Route colours for rendering on the map. */
+/** Route colours matching Figma specs */
 export const ROUTE_COLORS: Record<string, string> = {
-  'route-a': '#ff9400', // orange — primary / safest
-  'route-b': '#F87171', // coral-red — fastest but less activity
-  'route-c': '#38BDF8', // cyan — balanced
+  'route-a': '#ff8a00', // orange — safest
+  'route-c': '#38bdf8', // cyan — balanced
+  'route-b': '#f87171', // coral-red — fastest
 };
 
-/** Get route colour by id, fallback to gray. */
 export function getRouteColor(routeId: string): string {
-  return ROUTE_COLORS[routeId] ?? '#6b7280';
+  return ROUTE_COLORS[routeId] ?? '#ff8a00';
 }
-

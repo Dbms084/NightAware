@@ -1,16 +1,30 @@
 /**
- * RoutePolyline — renders a route path on the map.
+ * RoutePolyline — Renders route paths on the map.
  *
- * Supports selected/unselected states, dashed lines for alternate routes,
- * and tappable interaction for route comparison.
+ * Supports:
+ * - Selected / unselected states with glowing halos
+ * - Segment-by-segment activity heatmap visualization (Green, Yellow, Orange, Red)
+ * - Tappable interaction for switching routes
  */
 
 import { Polyline } from 'react-native-maps';
-
-import type { Coordinate } from '@/types/geo';
+import type { Coordinate, RouteHeatmapSegment } from '@/types/geo';
 
 // ---------------------------------------------------------------------------
-// Data type for passing polylines to the map
+// Helpers
+// ---------------------------------------------------------------------------
+
+function applyOpacity(hex: string, opacity: number): string {
+  const cleanHex = hex.replace('#', '');
+  if (cleanHex.length !== 6) return hex;
+  const r = parseInt(cleanHex.substring(0, 2), 16);
+  const g = parseInt(cleanHex.substring(2, 4), 16);
+  const b = parseInt(cleanHex.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+// ---------------------------------------------------------------------------
+// Props & Types
 // ---------------------------------------------------------------------------
 
 export type PolylineData = {
@@ -22,35 +36,26 @@ export type PolylineData = {
   dashed?: boolean;
 };
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Default stroke widths. */
-const STROKE_SELECTED = 5;
-const STROKE_UNSELECTED = 3;
-
-/** Opacity for unselected routes. */
-const UNSELECTED_OPACITY = 0.45;
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
 export type RoutePolylineProps = {
-  /** Ordered waypoints defining the route path. */
+  /** Route ID */
+  id?: string;
+  /** Ordered waypoints */
   coordinates: Coordinate[];
-  /** Line colour (hex string). */
+  /** Primary profile color (e.g. #ff8a00, #38bdf8, #f87171) */
   color: string;
-  /** Whether this route is currently selected / highlighted. */
+  /** Whether selected */
   selected?: boolean;
-  /** Override stroke width. */
+  /** Stroke width */
   strokeWidth?: number;
-  /** Draw a dashed line instead of solid. */
+  /** Dashed pattern */
   dashed?: boolean;
-  /** Called when the user taps this polyline. */
+  /** Optional segment heatmap data (green/yellow/orange/red) */
+  heatmapSegments?: RouteHeatmapSegment[];
+  /** Whether heatmap mode is active */
+  showHeatmap?: boolean;
+  /** Polyline tap callback */
   onPress?: () => void;
-  /** Unique key for React reconciliation (also used for z-index). */
+  /** Z-index */
   zIndex?: number;
 };
 
@@ -60,58 +65,84 @@ export function RoutePolyline({
   selected = false,
   strokeWidth,
   dashed = false,
+  heatmapSegments,
+  showHeatmap = false,
   onPress,
-  zIndex,
+  zIndex = 1,
 }: RoutePolylineProps) {
   if (coordinates.length < 2) return null;
 
-  const width = strokeWidth ?? (selected ? STROKE_SELECTED : STROKE_UNSELECTED);
+  const width = strokeWidth ?? (selected ? 6 : 3.5);
 
-  // Apply transparency to unselected routes via rgba.
-  const strokeColor = selected ? color : applyOpacity(color, UNSELECTED_OPACITY);
+  // If heatmap mode is active and heatmap segments are available for selected route
+  if (selected && showHeatmap && heatmapSegments && heatmapSegments.length > 0) {
+    return (
+      <>
+        {/* Subtle dark backdrop halo */}
+        <Polyline
+          coordinates={coordinates}
+          strokeColor="rgba(8, 10, 12, 0.85)"
+          strokeWidth={width + 4}
+          zIndex={zIndex}
+        />
+        {/* Colored activity segments */}
+        {heatmapSegments.map((segment, idx) => (
+          <Polyline
+            key={`heat-${idx}-${segment.coordinates.length}`}
+            coordinates={segment.coordinates}
+            strokeColor={segment.color}
+            strokeWidth={width}
+            zIndex={zIndex + 1}
+          />
+        ))}
+        {/* Tap target */}
+        {onPress && (
+          <Polyline
+            coordinates={coordinates}
+            strokeColor="transparent"
+            strokeWidth={width + 24}
+            tappable
+            onPress={onPress}
+            zIndex={zIndex + 2}
+          />
+        )}
+      </>
+    );
+  }
 
+  // Standard route rendering with halo when selected
   return (
     <>
-      {/* Wider invisible tap target behind the visible line */}
+      {/* Outer glow/halo for selected route */}
+      {selected && (
+        <Polyline
+          coordinates={coordinates}
+          strokeColor={applyOpacity(color, 0.28)}
+          strokeWidth={width + 7}
+          zIndex={zIndex}
+        />
+      )}
+
+      {/* Tappable interaction surface */}
       {onPress && (
         <Polyline
           coordinates={coordinates}
           strokeColor="transparent"
-          strokeWidth={width + 20}
+          strokeWidth={width + 24}
           tappable
           onPress={onPress}
-          zIndex={(zIndex ?? 0) + 1}
+          zIndex={zIndex + 2}
         />
       )}
-      {/* Visible route line */}
+
+      {/* Main route polyline */}
       <Polyline
         coordinates={coordinates}
-        strokeColor={strokeColor}
+        strokeColor={selected ? color : applyOpacity(color, 0.45)}
         strokeWidth={width}
-        lineCap="round"
-        lineJoin="round"
-        lineDashPattern={dashed ? [12, 8] : undefined}
-        tappable={!!onPress}
-        onPress={onPress}
-        zIndex={zIndex ?? (selected ? 10 : 1)}
+        lineDashPattern={dashed ? [8, 6] : undefined}
+        zIndex={zIndex + 1}
       />
     </>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Apply alpha to a hex colour string.
- * E.g. applyOpacity('#ff9400', 0.5) → 'rgba(255,148,0,0.5)'
- */
-function applyOpacity(hex: string, opacity: number): string {
-  const clean = hex.replace('#', '');
-  const r = parseInt(clean.substring(0, 2), 16);
-  const g = parseInt(clean.substring(2, 4), 16);
-  const b = parseInt(clean.substring(4, 6), 16);
-  return `rgba(${r},${g},${b},${opacity})`;
-}
-
