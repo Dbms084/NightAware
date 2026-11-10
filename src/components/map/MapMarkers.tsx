@@ -1,34 +1,42 @@
 /**
  * Custom map markers for NightAware.
- *
- * Each marker type renders a styled custom view inside a react-native-maps
- * Marker with a Callout tooltip. Minimum touch target: 44dp.
+ * Color-coded according to the Section 5 specification:
+ * - Green: Open establishments
+ * - Amber: Closing soon
+ * - Grey: Closed
+ * - Purple: Pharmacies
+ * - Orange: Petrol pumps
+ * - Blue: Police stations
+ * - Red: Hospitals
+ * - Cyan: Public transport
+ * - Distinct badges for CCTV and Streetlights
  */
 
-import { StyleSheet, Text, View } from 'react-native';
+import { Linking, StyleSheet, Text, View, Pressable } from 'react-native';
 import { Callout, Marker } from 'react-native-maps';
 
-import type { Coordinate, PlaceCategory, RiskLevel } from '@/types/geo';
-import { PLACE_CATEGORY_ICONS, PLACE_CATEGORY_LABELS, RISK_LEVEL_COLORS } from '@/types/geo';
+import type { Coordinate, PlaceCategory, Place, ArrivalStatus } from '@/types/geo';
+import { PLACE_CATEGORY_ICONS, PLACE_CATEGORY_LABELS, PLACE_MARKER_COLORS } from '@/types/geo';
 
 // ---------------------------------------------------------------------------
-// Shared data type for passing markers to the map
+// Marker Data
 // ---------------------------------------------------------------------------
 
 export type MarkerData = {
   id: string;
   coordinate: Coordinate;
-  type: 'origin' | 'destination' | 'place' | 'safety' | 'cctv' | 'incident';
+  type: 'origin' | 'destination' | 'place' | 'cctv' | 'streetlight';
   title?: string;
   subtitle?: string;
   category?: PlaceCategory;
-  riskLevel?: RiskLevel;
-  /** Whether the place is open at the journey time. */
   isOpen?: boolean | null;
+  phone?: string;
+  arrivalStatus?: ArrivalStatus;
+  place?: Place;
 };
 
 // ---------------------------------------------------------------------------
-// Origin Marker — cyan circle with inner dot
+// Origin Marker — Cyan circle with start dot
 // ---------------------------------------------------------------------------
 
 export function OriginMarker({
@@ -46,6 +54,7 @@ export function OriginMarker({
       anchor={{ x: 0.5, y: 0.5 }}
       tracksViewChanges={false}
       onPress={onPress}
+      zIndex={10}
     >
       <View style={styles.touchTarget} accessibilityLabel={`Start point: ${title}`}>
         <View style={styles.originOuter}>
@@ -55,7 +64,7 @@ export function OriginMarker({
       <Callout tooltip={false}>
         <View style={styles.callout}>
           <Text style={styles.calloutTitle}>{title}</Text>
-          <Text style={styles.calloutSubtitle}>Start point</Text>
+          <Text style={styles.calloutSubtitle}>Starting point</Text>
         </View>
       </Callout>
     </Marker>
@@ -63,7 +72,7 @@ export function OriginMarker({
 }
 
 // ---------------------------------------------------------------------------
-// Destination Marker — orange circle with home icon
+// Destination Marker — Orange pin with home/flag icon
 // ---------------------------------------------------------------------------
 
 export function DestinationMarker({
@@ -81,10 +90,11 @@ export function DestinationMarker({
       anchor={{ x: 0.5, y: 0.5 }}
       tracksViewChanges={false}
       onPress={onPress}
+      zIndex={10}
     >
       <View style={styles.touchTarget} accessibilityLabel={`Destination: ${title}`}>
-        <View style={styles.destinationCircle}>
-          <Text style={styles.destinationIcon}>🏠</Text>
+        <View style={styles.destinationPin}>
+          <Text style={styles.pinIcon}>🏠</Text>
         </View>
       </View>
       <Callout tooltip={false}>
@@ -98,160 +108,75 @@ export function DestinationMarker({
 }
 
 // ---------------------------------------------------------------------------
-// Place Marker — emoji icon by category
+// Place Marker — Color-coded according to category & opening state
 // ---------------------------------------------------------------------------
 
-export function PlaceMarker({
-  coordinate,
-  category,
-  name,
-  isOpen,
-  onPress,
-}: {
-  coordinate: Coordinate;
-  category: PlaceCategory;
-  name: string;
+export type PlaceMarkerProps = {
+  place?: Place;
+  coordinate?: Coordinate;
+  category?: PlaceCategory;
+  name?: string;
   isOpen?: boolean | null;
   onPress?: () => void;
-}) {
-  const icon = PLACE_CATEGORY_ICONS[category];
-  const label = PLACE_CATEGORY_LABELS[category];
-  const openLabel =
-    isOpen === true ? 'Open' : isOpen === false ? 'Closed' : 'Hours unknown';
-  const borderColor =
-    isOpen === true ? '#4ADE80' : isOpen === false ? '#F87171' : '#6b7280';
+};
+
+export function PlaceMarker(props: PlaceMarkerProps) {
+  const coord = props.place?.coordinate ?? props.coordinate ?? { latitude: 0, longitude: 0 };
+  const name = props.place?.name ?? props.name ?? 'Place';
+  const category = props.place?.category ?? props.category ?? 'shop_food';
+  const isOpen = props.place?.openAtJourneyTime ?? props.isOpen;
+  const place = props.place;
+
+  const icon = PLACE_CATEGORY_ICONS[category] || '📍';
+  const label = PLACE_CATEGORY_LABELS[category] || 'Place';
+
+  // Determine badge background color based on category & status
+  let badgeColor = PLACE_MARKER_COLORS[category] || '#64748b';
+  let statusText = 'Hours unknown';
+
+  if (place?.is24_7) {
+    statusText = 'Open 24/7';
+    if (category === 'shop_food') badgeColor = '#22c55e'; // Green
+  } else if (place?.arrivalStatus === 'closing_soon') {
+    statusText = 'Closing soon';
+    badgeColor = '#f59e0b'; // Amber
+  } else if (place?.arrivalStatus === 'closed_at_arrival' || isOpen === false) {
+    statusText = 'Closed at arrival';
+    badgeColor = '#64748b'; // Grey
+  } else if (place?.arrivalStatus === 'open_at_arrival' || isOpen === true) {
+    statusText = 'Open at arrival';
+    if (category === 'shop_food') badgeColor = '#22c55e'; // Green
+  }
+
+  const handleCall = () => {
+    if (place?.phone) {
+      void Linking.openURL(`tel:${place.phone.replace(/[^0-9+]/g, '')}`);
+    }
+  };
 
   return (
     <Marker
-      coordinate={coordinate}
+      coordinate={coord}
       anchor={{ x: 0.5, y: 0.5 }}
       tracksViewChanges={false}
-      onPress={onPress}
+      onPress={props.onPress}
+      zIndex={5}
     >
-      <View style={styles.touchTarget} accessibilityLabel={`${name}, ${label}, ${openLabel}`}>
-        <View style={[styles.placeMarker, { borderColor }]}>
-          <Text style={styles.placeIcon}>{icon}</Text>
+      <View style={styles.touchTarget} accessibilityLabel={`${name}, ${label}, ${statusText}`}>
+        <View style={[styles.placeBadge, { borderColor: badgeColor }]}>
+          <Text style={styles.placeEmoji}>{icon}</Text>
         </View>
       </View>
-      <Callout tooltip={false}>
+      <Callout tooltip={false} onPress={handleCall}>
         <View style={styles.callout}>
           <Text style={styles.calloutTitle}>{name}</Text>
-          <Text style={styles.calloutSubtitle}>
-            {label} · {openLabel}
-          </Text>
-        </View>
-      </Callout>
-    </Marker>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Safety Marker — color-coded risk level dot
-// ---------------------------------------------------------------------------
-
-export function SafetyMarker({
-  coordinate,
-  riskLevel,
-  reason,
-  onPress,
-}: {
-  coordinate: Coordinate;
-  riskLevel: RiskLevel;
-  reason: string;
-  onPress?: () => void;
-}) {
-  const color = RISK_LEVEL_COLORS[riskLevel];
-  const levelLabel = riskLevel === 'low' ? 'Low risk' : riskLevel === 'medium' ? 'Moderate risk' : 'Higher risk';
-
-  return (
-    <Marker
-      coordinate={coordinate}
-      anchor={{ x: 0.5, y: 0.5 }}
-      tracksViewChanges={false}
-      onPress={onPress}
-    >
-      <View style={styles.touchTarget} accessibilityLabel={`${levelLabel}: ${reason}`}>
-        <View style={[styles.safetyDot, { backgroundColor: color }]} />
-      </View>
-      <Callout tooltip={false}>
-        <View style={styles.callout}>
-          <Text style={styles.calloutTitle}>{levelLabel}</Text>
-          <Text style={styles.calloutSubtitle}>{reason}</Text>
-        </View>
-      </Callout>
-    </Marker>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// CCTV Marker — camera icon
-// ---------------------------------------------------------------------------
-
-export function CCTVMarker({
-  coordinate,
-  name,
-  onPress,
-}: {
-  coordinate: Coordinate;
-  name?: string;
-  onPress?: () => void;
-}) {
-  return (
-    <Marker
-      coordinate={coordinate}
-      anchor={{ x: 0.5, y: 0.5 }}
-      tracksViewChanges={false}
-      onPress={onPress}
-    >
-      <View style={styles.touchTarget} accessibilityLabel={`CCTV camera${name ? `: ${name}` : ''}`}>
-        <View style={styles.cctvMarker}>
-          <Text style={styles.cctvIcon}>📷</Text>
-        </View>
-      </View>
-      {name && (
-        <Callout tooltip={false}>
-          <View style={styles.callout}>
-            <Text style={styles.calloutTitle}>{name}</Text>
-            <Text style={styles.calloutSubtitle}>CCTV Camera</Text>
-          </View>
-        </Callout>
-      )}
-    </Marker>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Incident Marker — for Member 3's incident reports
-// ---------------------------------------------------------------------------
-
-export function IncidentMarker({
-  coordinate,
-  title,
-  description,
-  onPress,
-}: {
-  coordinate: Coordinate;
-  title: string;
-  description?: string;
-  onPress?: () => void;
-}) {
-  return (
-    <Marker
-      coordinate={coordinate}
-      anchor={{ x: 0.5, y: 0.5 }}
-      tracksViewChanges={false}
-      onPress={onPress}
-    >
-      <View style={styles.touchTarget} accessibilityLabel={`Reported incident: ${title}`}>
-        <View style={styles.incidentMarker}>
-          <Text style={styles.incidentIcon}>⚠️</Text>
-        </View>
-      </View>
-      <Callout tooltip={false}>
-        <View style={styles.callout}>
-          <Text style={styles.calloutTitle}>{title}</Text>
-          {description ? (
-            <Text style={styles.calloutSubtitle}>{description}</Text>
+          <Text style={styles.calloutCategory}>{label}</Text>
+          <Text style={[styles.calloutStatus, { color: badgeColor }]}>● {statusText}</Text>
+          {place?.estimatedArrivalTime ? (
+            <Text style={styles.calloutTime}>Est. Arrival: {place.estimatedArrivalTime}</Text>
+          ) : null}
+          {place?.phone ? (
+            <Text style={styles.calloutPhone}>📞 {place.phone} (Tap to Call)</Text>
           ) : null}
         </View>
       </Callout>
@@ -260,172 +185,196 @@ export function IncidentMarker({
 }
 
 // ---------------------------------------------------------------------------
-// Cluster Marker — number badge for overlapping markers (stretch goal)
+// Safety, CCTV, Incident & Cluster Marker compatibility exports
 // ---------------------------------------------------------------------------
+
+export function SafetyMarker({
+  coordinate,
+  reason = 'Safety point',
+}: {
+  coordinate: Coordinate;
+  riskLevel?: string;
+  reason?: string;
+  onPress?: () => void;
+}) {
+  return (
+    <Marker coordinate={coordinate} tracksViewChanges={false}>
+      <View style={styles.touchTarget}>
+        <View style={[styles.placeBadge, { borderColor: '#eab308' }]}>
+          <Text style={styles.placeEmoji}>⚠️</Text>
+        </View>
+      </View>
+      <Callout tooltip={false}>
+        <View style={styles.callout}>
+          <Text style={styles.calloutTitle}>{reason}</Text>
+        </View>
+      </Callout>
+    </Marker>
+  );
+}
+
+export function CCTVMarker({
+  coordinate,
+  name = 'CCTV Camera',
+}: {
+  coordinate: Coordinate;
+  name?: string;
+  onPress?: () => void;
+}) {
+  return (
+    <Marker coordinate={coordinate} tracksViewChanges={false}>
+      <View style={styles.touchTarget}>
+        <View style={[styles.placeBadge, { borderColor: '#64748b' }]}>
+          <Text style={styles.placeEmoji}>📷</Text>
+        </View>
+      </View>
+      <Callout tooltip={false}>
+        <View style={styles.callout}>
+          <Text style={styles.calloutTitle}>{name}</Text>
+          <Text style={styles.calloutCategory}>Public CCTV Infrastructure</Text>
+        </View>
+      </Callout>
+    </Marker>
+  );
+}
+
+export function IncidentMarker({
+  coordinate,
+  title = 'Safety incident',
+}: {
+  coordinate: Coordinate;
+  title?: string;
+  description?: string;
+  onPress?: () => void;
+}) {
+  return (
+    <Marker coordinate={coordinate} tracksViewChanges={false}>
+      <View style={styles.touchTarget}>
+        <View style={[styles.placeBadge, { borderColor: '#f87171' }]}>
+          <Text style={styles.placeEmoji}>🚨</Text>
+        </View>
+      </View>
+      <Callout tooltip={false}>
+        <View style={styles.callout}>
+          <Text style={styles.calloutTitle}>{title}</Text>
+        </View>
+      </Callout>
+    </Marker>
+  );
+}
 
 export function ClusterMarker({
   coordinate,
   count,
-  onPress,
 }: {
   coordinate: Coordinate;
   count: number;
   onPress?: () => void;
 }) {
   return (
-    <Marker
-      coordinate={coordinate}
-      anchor={{ x: 0.5, y: 0.5 }}
-      tracksViewChanges={false}
-      onPress={onPress}
-    >
-      <View style={styles.touchTarget} accessibilityLabel={`${count} markers in this area`}>
-        <View style={styles.clusterCircle}>
-          <Text style={styles.clusterText}>{count > 99 ? '99+' : count}</Text>
-        </View>
+    <Marker coordinate={coordinate} tracksViewChanges={false}>
+      <View style={[styles.placeBadge, { borderColor: '#ff8a00', width: 32, height: 32, borderRadius: 16 }]}>
+        <Text style={[styles.calloutTitle, { color: '#ff8a00', fontSize: 12, marginBottom: 0 }]}>
+          {count}
+        </Text>
       </View>
     </Marker>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Styles — consistent with NightAware dark theme
+// Styles
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  // Ensures 48dp minimum touch target around all markers
   touchTarget: {
-    width: 48,
-    height: 48,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
-
-  // Origin — cyan ring with inner dot
   originOuter: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    borderWidth: 3,
-    borderColor: '#38BDF8',
-    backgroundColor: 'transparent',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(56, 189, 248, 0.25)',
+    borderWidth: 2,
+    borderColor: '#38bdf8',
     alignItems: 'center',
     justifyContent: 'center',
   },
   originInner: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#38BDF8',
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: '#38bdf8',
   },
-
-  // Destination — orange circle with home icon
-  destinationCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#ff9400',
+  destinationPin: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#ff8a00',
     alignItems: 'center',
     justifyContent: 'center',
-    // subtle shadow
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 3,
     elevation: 4,
-    shadowColor: '#ff9400',
+  },
+  pinIcon: {
+    fontSize: 14,
+  },
+  placeBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#11151a',
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
-    shadowRadius: 4,
-  },
-  destinationIcon: {
-    fontSize: 18,
-  },
-
-  // Place markers — small circle with emoji
-  placeMarker: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#111519',
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 2,
-  },
-  placeIcon: {
-    fontSize: 14,
-  },
-
-  // Safety dot
-  safetyDot: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.3)',
-    elevation: 2,
-  },
-
-  // CCTV
-  cctvMarker: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#1a1f24',
-    borderWidth: 1.5,
-    borderColor: '#6b7280',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cctvIcon: {
-    fontSize: 14,
-  },
-
-  // Incident — warning triangle
-  incidentMarker: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#7F1D1D',
-    borderWidth: 2,
-    borderColor: '#F87171',
-    alignItems: 'center',
-    justifyContent: 'center',
+    shadowRadius: 2,
     elevation: 3,
   },
-  incidentIcon: {
-    fontSize: 16,
-  },
-
-  // Cluster
-  clusterCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#ff9400',
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 4,
-  },
-  clusterText: {
-    color: '#101214',
+  placeEmoji: {
     fontSize: 13,
-    fontWeight: '700',
   },
-
-  // Callout tooltip (shared)
   callout: {
-    minWidth: 120,
+    padding: 8,
     maxWidth: 220,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
   },
   calloutTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0f172a',
     marginBottom: 2,
   },
   calloutSubtitle: {
-    fontSize: 12,
-    color: '#6b7280',
+    fontSize: 11,
+    color: '#64748b',
+    marginBottom: 2,
+  },
+  calloutCategory: {
+    fontSize: 10,
+    color: '#64748b',
+    marginBottom: 2,
+  },
+  calloutStatus: {
+    fontSize: 10,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  calloutTime: {
+    fontSize: 9,
+    color: '#475569',
+  },
+  calloutPhone: {
+    fontSize: 10,
+    color: '#0284c7',
+    fontWeight: '600',
+    marginTop: 4,
   },
 });
-

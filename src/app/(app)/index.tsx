@@ -18,17 +18,17 @@ import Animated, {
   withTiming,
   Easing,
   interpolate,
-  runOnJS,
 } from 'react-native-reanimated';
 
-import { useAuth } from '@/features/auth/providers/AuthProvider';
 import { useLocation } from '@/features/location/hooks/useLocation';
-import { NightAwareMap, OriginMarker, DestinationMarker, RoutePolyline } from '@/components/map';
+import { NightAwareMap, OriginMarker, DestinationMarker, PlaceMarker, RoutePolyline } from '@/components/map';
 import { DEMO_ORIGIN, DEMO_DESTINATION } from '@/data/mock-places';
-import { MOCK_ROUTES, getRouteColor } from '@/data/mock-routes';
+import { MOCK_ROUTES } from '@/data/mock-routes';
 import { LocationSearchModal, type SearchField } from '@/components/ui/LocationSearchModal';
-import { getRouteOptions, clearRouteCache } from '@/features/routes/services/route-provider';
-import type { Coordinate, RouteOption } from '@/types/geo';
+import { getRouteOptions, clearRouteCache, ROUTE_COLORS_BY_PROFILE } from '@/features/routes/services/route-provider';
+import { getPlacesNearRoute } from '@/features/places/services/place-provider';
+import { RouteCardSkeleton } from '@/components/ui/Skeleton';
+import type { Coordinate, Place, RouteOption } from '@/types/geo';
 
 type TravelMode = 'Walking' | 'Cycling' | 'Driving';
 
@@ -100,7 +100,6 @@ function Icon({ name, color = ORANGE, size = 24 }: { name: IconName; color?: str
 // ---------------------------------------------------------------------------
 
 export default function HomeScreen() {
-  const { user, signOut } = useAuth();
   const router = useRouter();
   const location = useLocation();
   const insets = useSafeAreaInsets();
@@ -116,16 +115,17 @@ export default function HomeScreen() {
   const [customStartName, setCustomStartName] = useState<string | null>(null);
   const [customStartAddress, setCustomStartAddress] = useState<string | null>(null);
   const [destCoord, setDestCoord] = useState<Coordinate | null>(null);
-  const [destName, setDestName] = useState('Home · 12th Main Road');
-  const [destAddress, setDestAddress] = useState('');
+  const [destName, setDestName] = useState<string | null>(null);
+  const [destAddress, setDestAddress] = useState<string | null>(null);
 
   // Map expansion animation
   const [isMapExpanded, setIsMapExpanded] = useState(false);
   const expandProgress = useSharedValue(0);
 
-  // Routes state
-  const [routes, setRoutes] = useState<RouteOption[]>(MOCK_ROUTES);
+  // Routes state — start empty with no defaults
+  const [routes, setRoutes] = useState<RouteOption[]>([]);
   const [isLoadingRoutes, setIsLoadingRoutes] = useState(false);
+  const [routePlaces, setRoutePlaces] = useState<Place[]>([]);
 
   const hasGpsLocation = location.permissionStatus === 'granted' && location.coordinate != null;
   const isUsingCustomStart = customStartCoord != null;
@@ -134,34 +134,47 @@ export default function HomeScreen() {
     ? (customStartName ?? 'Custom start')
     : hasGpsLocation
       ? (location.address ?? 'Current location')
-      : 'Indiranagar Metro · Exit A';
+      : 'Set starting point';
 
   const originSubtext = isUsingCustomStart
     ? (customStartAddress ?? 'Custom starting point')
     : hasGpsLocation
       ? 'GPS · High accuracy'
       : location.error
-        ? 'Location unavailable · tap to retry'
+        ? 'Location unavailable · tap to set'
         : location.permissionStatus === 'denied'
-          ? 'Location denied · tap to enable'
-          : 'Tap to choose start location';
+          ? 'Location denied · tap to set'
+          : 'Tap to choose starting point';
 
   const originCoord = isUsingCustomStart
     ? customStartCoord
     : hasGpsLocation
       ? location.coordinate!
-      : DEMO_ORIGIN;
+      : null;
 
   const hasLocation = hasGpsLocation || isUsingCustomStart;
   const hasDestination = destCoord != null;
-  // If user has location (GPS/custom start) and no destination chosen yet, don't fallback to Bangalore demo destination
-  const destCoordFinal = destCoord ?? (hasLocation ? null : DEMO_DESTINATION);
+  const destCoordFinal = destCoord;
   const isUsingRealData = hasLocation && hasDestination;
   const primaryRoute = routes.length > 0 ? routes[0] : null;
 
+  // Fetch POIs along the primary route
+  useEffect(() => {
+    if (!primaryRoute) return;
+    let isMounted = true;
+    void getPlacesNearRoute(primaryRoute.coordinates, 280).then((places) => {
+      if (isMounted) {
+        setRoutePlaces(places);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [primaryRoute]);
+
   // Dynamic map region: centers on current focus area or fits route
   const mapRegion = useMemo(() => {
-    if (destCoordFinal) {
+    if (originCoord && destCoordFinal) {
       const latDelta = Math.max(0.012, Math.abs(originCoord.latitude - destCoordFinal.latitude) * 1.6);
       const lngDelta = Math.max(0.012, Math.abs(originCoord.longitude - destCoordFinal.longitude) * 1.6);
       return {
@@ -171,18 +184,25 @@ export default function HomeScreen() {
         longitudeDelta: lngDelta,
       };
     }
-    // No destination yet: focus directly on origin (user GPS or custom start)
+    if (originCoord) {
+      return {
+        latitude: originCoord.latitude,
+        longitude: originCoord.longitude,
+        latitudeDelta: 0.015,
+        longitudeDelta: 0.015,
+      };
+    }
     return {
-      latitude: originCoord.latitude,
-      longitude: originCoord.longitude,
-      latitudeDelta: 0.015,
-      longitudeDelta: 0.015,
+      latitude: 22.5726,
+      longitude: 88.3639,
+      latitudeDelta: 0.04,
+      longitudeDelta: 0.04,
     };
   }, [originCoord, destCoordFinal]);
 
   // Coordinates for NightAwareMap to automatically fit and center camera
   const coordinatesToFit = useMemo(() => {
-    if (!destCoordFinal) return undefined;
+    if (!originCoord || !destCoordFinal) return undefined;
     if (primaryRoute && primaryRoute.coordinates.length > 1) {
       return [originCoord, destCoordFinal, ...primaryRoute.coordinates];
     }
@@ -263,12 +283,8 @@ export default function HomeScreen() {
 
   // Fetch real routes whenever origin, destination, or mode changes
   useEffect(() => {
-    if (!hasLocation || !destCoord) {
-      if (hasLocation && !destCoord) {
-        setRoutes([]);
-      } else {
-        setRoutes(MOCK_ROUTES);
-      }
+    if (!originCoord || !destCoord) {
+      setRoutes([]);
       setIsLoadingRoutes(false);
       return;
     }
@@ -290,13 +306,13 @@ export default function HomeScreen() {
     })
       .then((fetched) => {
         if (!cancelled) {
-          setRoutes(fetched.length > 0 ? fetched : MOCK_ROUTES);
+          setRoutes(fetched);
           setIsLoadingRoutes(false);
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setRoutes(MOCK_ROUTES);
+          setRoutes([]);
           setIsLoadingRoutes(false);
         }
       });
@@ -304,18 +320,30 @@ export default function HomeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [hasLocation, destCoord, mode, originCoord]);
+  }, [originCoord, destCoord, mode]);
 
-  // Navigate to compare screen with real coordinates
+  // Navigate to compare screen with active coordinates
   const handleCompare = useCallback(() => {
-    if (hasLocation && destCoord) {
-      router.push(
-        `/compare?olat=${originCoord.latitude}&olng=${originCoord.longitude}&dlat=${destCoord.latitude}&dlng=${destCoord.longitude}&mode=${mode}` as never,
-      );
-    } else {
-      router.push('/compare' as never);
-    }
-  }, [hasLocation, destCoord, originCoord, mode, router]);
+    // Determine active origin (GPS, custom start, or nearby demo)
+    const activeOrigin = originCoord ?? (location.coordinate ?? (
+      destCoord
+        ? { latitude: destCoord.latitude + 0.015, longitude: destCoord.longitude - 0.012 }
+        : { latitude: 12.9779, longitude: 77.6408 }
+    ));
+
+    // Determine active destination
+    const activeDest = destCoord ?? {
+      latitude: activeOrigin.latitude - 0.014,
+      longitude: activeOrigin.longitude + 0.012,
+    };
+
+    const onameParam = encodeURIComponent(originLabel || 'Starting Point');
+    const dnameParam = encodeURIComponent(destName || 'Selected Destination');
+
+    router.push(
+      `/compare?olat=${activeOrigin.latitude}&olng=${activeOrigin.longitude}&dlat=${activeDest.latitude}&dlng=${activeDest.longitude}&mode=${mode}&oname=${onameParam}&dname=${dnameParam}` as never,
+    );
+  }, [destCoord, originCoord, location.coordinate, originLabel, destName, mode, router]);
 
   return (
     <SafeAreaView className="flex-1 bg-[#090b0d]" style={styles.screen} edges={['top', 'left', 'right']}>
@@ -334,18 +362,15 @@ export default function HomeScreen() {
             <View>
               <Text className="text-[32px] leading-[40px] text-[#f5f5f3]">Where to tonight?</Text>
               <Text className="mt-1 text-[18px] text-[#aab2bb]">
-                {hasLocation ? (location.address?.split(',').slice(-3, -1).join(',').trim() ?? 'Your area') : 'Bengaluru · Indiranagar'}
+                {hasLocation ? (location.address?.split(',').slice(-3, -1).join(',').trim() ?? 'Your area') : 'Set start & destination'}
               </Text>
             </View>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Account ${user?.email ?? ''}; sign out`}
+              accessibilityLabel="NightAware Account"
               className="min-h-12 min-w-12 items-center justify-center"
               onPress={() =>
-                Alert.alert('Account', user?.email ?? 'Signed in', [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Sign out', style: 'destructive', onPress: () => void signOut() },
-                ])
+                Alert.alert('NightAware', 'Women\'s Night Route Companion')
               }
             >
               <Icon name="account" color="#aab2bb" size={32} />
@@ -407,13 +432,15 @@ export default function HomeScreen() {
             <View className="flex-1">
               <View className="flex-row items-center justify-between">
                 <Text className="mb-1 text-base text-[#85909b]">DESTINATION</Text>
-                <Text className="text-xs font-semibold text-[#ff9400]">CHANGE</Text>
+                <Text className="text-xs font-semibold text-[#ff9400]">{destName ? 'CHANGE' : 'SEARCH'}</Text>
               </View>
-              <Text className="text-[20px] text-[#f1f2f1]" numberOfLines={1}>{destName}</Text>
+              <Text className="text-[20px] text-[#f1f2f1]" numberOfLines={1}>
+                {destName || 'Where to tonight?'}
+              </Text>
               {destAddress ? (
                 <Text className="mt-1 text-xs text-[#85909b]" numberOfLines={1}>{destAddress}</Text>
               ) : (
-                <Text className="mt-1 text-xs text-[#4ADE80]">Tap to search like Google Maps</Text>
+                <Text className="mt-1 text-xs text-[#4ADE80]">Tap to search destination anywhere</Text>
               )}
             </View>
             <View className="ml-2">
@@ -488,12 +515,15 @@ export default function HomeScreen() {
                 {primaryRoute && (
                   <RoutePolyline
                     coordinates={primaryRoute.coordinates}
-                    color={primaryRoute.isMock ? getRouteColor(primaryRoute.id) : '#ff9400'}
+                    color={ROUTE_COLORS_BY_PROFILE[primaryRoute.profileType] || '#ff8a00'}
                     selected
                   />
                 )}
-                <OriginMarker coordinate={originCoord} title={originLabel} />
-                {destCoordFinal && <DestinationMarker coordinate={destCoordFinal} title={destName} />}
+                {routePlaces.map((place) => (
+                  <PlaceMarker key={place.id} place={place} />
+                ))}
+                {originCoord && <OriginMarker coordinate={originCoord} title={originLabel} />}
+                {destCoord && <DestinationMarker coordinate={destCoord} title={destName ?? 'Destination'} />}
               </NightAwareMap>
             </View>
             <Pressable onPress={expandMap} className="flex-row items-center px-5 py-4">
@@ -501,7 +531,7 @@ export default function HomeScreen() {
               <Text className="ml-4 flex-1 text-[18px] text-[#b0b7c0]">
                 {isLoadingRoutes
                   ? 'Computing best routes...'
-                  : destCoordFinal
+                  : destCoord
                     ? `After-dark ${mode.toLowerCase()} · ${routes.length} route${routes.length !== 1 ? 's' : ''} available`
                     : 'Choose destination to view night routes'}
               </Text>
@@ -509,13 +539,22 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
+          {/* SKELETON LOADING STATE WHEN CALCULATING ROUTES */}
+          {isLoadingRoutes && (
+            <View className="mb-6">
+              <RouteCardSkeleton />
+            </View>
+          )}
+
           {/* Compare routes action button */}
           <Pressable
             accessibilityRole="button"
             className="min-h-[80px] flex-row items-center justify-center gap-3 rounded-2xl bg-[#ff9400] active:opacity-80"
             onPress={handleCompare}
           >
-            <Text className="text-[22px] font-medium text-[#101214]">Compare routes</Text>
+            <Text className="text-[22px] font-bold text-[#101214]">
+              Compare routes
+            </Text>
             <Icon name="routes" color="#101214" size={25} />
           </Pressable>
 
@@ -548,13 +587,16 @@ export default function HomeScreen() {
               <RoutePolyline
                 key={route.id}
                 coordinates={route.coordinates}
-                color={route.isMock ? getRouteColor(route.id) : ['#ff9400', '#38BDF8', '#F87171', '#A78BFA', '#34D399'][i % 5]}
+                color={ROUTE_COLORS_BY_PROFILE[route.profileType] || '#ff8a00'}
                 selected={i === 0}
                 zIndex={routes.length - i}
               />
             ))}
-            <OriginMarker coordinate={originCoord} title={originLabel} />
-            {destCoordFinal && <DestinationMarker coordinate={destCoordFinal} title={destName} />}
+            {routePlaces.map((place) => (
+              <PlaceMarker key={place.id} place={place} />
+            ))}
+            {originCoord && <OriginMarker coordinate={originCoord} title={originLabel} />}
+            {destCoord && <DestinationMarker coordinate={destCoord} title={destName ?? 'Destination'} />}
           </NightAwareMap>
 
           {/* Floating Top Controls */}
@@ -562,7 +604,7 @@ export default function HomeScreen() {
             <View style={styles.topPill}>
               <View style={styles.liveDot} />
               <Text style={styles.topPillText} numberOfLines={1}>
-                {destName}
+                {destName || 'Evening Route Preview'}
               </Text>
             </View>
 
@@ -617,7 +659,7 @@ export default function HomeScreen() {
         initialField={searchField}
         startLabel={originLabel}
         startCoordinate={originCoord}
-        destinationLabel={destName}
+        destinationLabel={destName ?? ''}
         destinationCoordinate={destCoord}
         userGpsCoordinate={location.coordinate}
         userGpsAddress={location.address}

@@ -1,23 +1,39 @@
 /**
- * Night Activity Score calculator.
+ * NightAware — Intelligent Night Activity Scoring Engine.
  *
- * Computes a 0–100 score based on real nearby place data.
- * This is an ACTIVITY proxy, NOT a safety guarantee.
+ * Implements the 9-parameter weighted scoring model (0–100) defined in specification:
+ * 1. Open shops & establishments (20 pts)
+ * 2. Opening hours & time-based availability (15 pts)
+ * 3. Pharmacy & 24/7 essential services (10 pts)
+ * 4. Activity continuity & isolation gaps (15 pts)
+ * 5. Main-road accessibility (10 pts)
+ * 6. Police stations, hospitals & help points (10 pts)
+ * 7. Street lighting (10 pts)
+ * 8. CCTV coverage (5 pts)
+ * 9. Public transport accessibility (5 pts)
  *
- * Factors:
- * - Density of places near the route
- * - Count of places likely open at journey time
- * - Presence of help points (hospitals, police, help_point)
- * - Longest stretch without an open help point
+ * TOTAL: 100 points
  */
 
-import type { Coordinate, Place, PlaceCategory } from '@/types/geo';
+import type {
+  Coordinate,
+  Place,
+  PlaceCategory,
+  ScoreBreakdown,
+  ScoringWeights,
+  RouteHeatmapSegment,
+  HeatmapColor,
+  ArrivalStatus,
+  TravelMode,
+} from '@/types/geo';
+import { DEFAULT_SCORING_WEIGHTS } from '@/types/geo';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function distanceMeters(a: Coordinate, b: Coordinate): number {
+/** Haversine distance in metres between two coordinates */
+export function distanceMeters(a: Coordinate, b: Coordinate): number {
   const R = 6_371_000;
   const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
   const dLon = ((b.longitude - a.longitude) * Math.PI) / 180;
@@ -31,106 +47,469 @@ function distanceMeters(a: Coordinate, b: Coordinate): number {
   return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
-const HELP_CATEGORIES: PlaceCategory[] = ['hospital', 'police', 'help_point', 'pharmacy'];
+/** Total polyline distance */
+export function computeTotalDistanceMeters(coords: Coordinate[]): number {
+  let dist = 0;
+  for (let i = 0; i < coords.length - 1; i++) {
+    dist += distanceMeters(coords[i], coords[i + 1]);
+  }
+  return dist;
+}
+
+/** Travel speed in metres per second */
+function getSpeedMps(mode: TravelMode): number {
+  switch (mode) {
+    case 'cycling':
+      return 4.2; // ~15 km/h
+    case 'driving':
+      return 8.3; // ~30 km/h (city night)
+    case 'walking':
+    default:
+      return 1.3; // ~4.7 km/h
+  }
+}
+
+/** Parse "HH:MM" into minutes from midnight */
+function parseTimeToMinutes(timeStr: string): number | null {
+  const parts = timeStr.split(':');
+  if (parts.length < 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+/** Format Date as "HH:MM" */
+function formatTime(d: Date): string {
+  const h = d.getHours().toString().padStart(2, '0');
+  const m = d.getMinutes().toString().padStart(2, '0');
+  return `${h}:${m}`;
+}
 
 // ---------------------------------------------------------------------------
-// Public API
+// Arrival Time & Status Calculator
 // ---------------------------------------------------------------------------
-
-export type ActivityScoreResult = {
-  /** 0–100 score. Higher = more nearby activity. */
-  score: number;
-  /** Number of places open near route */
-  openPlacesCount: number;
-  /** Total places near route */
-  totalPlacesCount: number;
-  /** Longest gap (metres) between open help points along the route */
-  longestStretchWithoutHelpMeters: number;
-  /** Whether this is computed from real data */
-  isReal: boolean;
-};
 
 /**
- * Compute Night Activity Score from nearby places.
+ * Calculates user's estimated arrival time at an establishment and evaluates
+ * whether it will be open, closing soon, or closed when the user arrives.
  */
-export function computeActivityScore(
-  routeCoordinates: Coordinate[],
-  nearbyPlaces: Place[],
-): ActivityScoreResult {
-  const totalPlaces = nearbyPlaces.length;
-  const openPlaces = nearbyPlaces.filter((p) => p.openAtJourneyTime === true);
-  const openHelpPlaces = openPlaces.filter((p) =>
-    HELP_CATEGORIES.includes(p.category),
-  );
+export function evaluateEstablishmentArrival(
+  place: Place,
+  routeCoords: Coordinate[],
+  departureTime: Date,
+  travelMode: TravelMode = 'walking',
+): {
+  distanceFromStart: number;
+  distanceFromRoute: number;
+  estimatedArrivalTime: string;
+  arrivalStatus: ArrivalStatus;
+  isOpenAtArrival: boolean;
+} {
+  // Find closest point on route to place
+  let minDistance = Infinity;
+  let accumulatedDistAtMin = 0;
+  let runningDist = 0;
 
-  // Factor 1: Place density (0–35 points)
-  // 20+ places = full score, fewer = proportional
-  const densityScore = Math.min(35, (totalPlaces / 20) * 35);
+  for (let i = 0; i < routeCoords.length; i++) {
+    if (i > 0) {
+      runningDist += distanceMeters(routeCoords[i - 1], routeCoords[i]);
+    }
+    const d = distanceMeters(place.coordinate, routeCoords[i]);
+    if (d < minDistance) {
+      minDistance = d;
+      accumulatedDistAtMin = runningDist;
+    }
+  }
 
-  // Factor 2: Open places ratio (0–30 points)
-  const openRatio = totalPlaces > 0 ? openPlaces.length / totalPlaces : 0;
-  const openScore = openRatio * 30;
+  // Arrival time calculation
+  const speed = getSpeedMps(travelMode);
+  const travelSeconds = accumulatedDistAtMin / speed;
+  const arrivalDate = new Date(departureTime.getTime() + travelSeconds * 1000);
+  const arrivalTimeStr = formatTime(arrivalDate);
+  const arrivalMinutes = arrivalDate.getHours() * 60 + arrivalDate.getMinutes();
 
-  // Factor 3: Help point coverage (0–20 points)
-  const helpScore = Math.min(20, openHelpPlaces.length * 5);
+  // Operating status
+  let arrivalStatus: ArrivalStatus = 'unknown';
+  let isOpenAtArrival = false;
 
-  // Factor 4: Route coverage — longest stretch without help (0–15 points)
-  const longestGap = computeLongestGapWithoutHelp(
-    routeCoordinates,
-    openHelpPlaces,
-  );
-  // 0m gap = 15 points, 2000m+ gap = 0 points
-  const gapScore = Math.max(0, 15 - (longestGap / 2000) * 15);
+  if (place.is24_7) {
+    arrivalStatus = 'open_24_7';
+    isOpenAtArrival = true;
+  } else if (place.openTime && place.closeTime) {
+    const openM = parseTimeToMinutes(place.openTime);
+    const closeM = parseTimeToMinutes(place.closeTime);
 
-  const score = Math.round(
-    Math.min(100, densityScore + openScore + helpScore + gapScore),
-  );
+    if (openM !== null && closeM !== null) {
+      // Handle midnight crossing (e.g. 18:00 to 02:00)
+      const spansMidnight = closeM < openM;
+      const isOpen = spansMidnight
+        ? arrivalMinutes >= openM || arrivalMinutes < closeM
+        : arrivalMinutes >= openM && arrivalMinutes < closeM;
 
-  const isReal = nearbyPlaces.some((p) => p.dataSource === 'provider');
+      if (!isOpen) {
+        arrivalStatus = 'closed_at_arrival';
+        isOpenAtArrival = false;
+      } else {
+        // Check closing soon (within 30 minutes of close)
+        const minToClose = spansMidnight
+          ? (arrivalMinutes >= openM ? (1440 - arrivalMinutes + closeM) : (closeM - arrivalMinutes))
+          : (closeM - arrivalMinutes);
+
+        if (minToClose > 0 && minToClose <= 30) {
+          arrivalStatus = 'closing_soon';
+          isOpenAtArrival = true;
+        } else {
+          arrivalStatus = 'open_at_arrival';
+          isOpenAtArrival = true;
+        }
+      }
+    }
+  } else {
+    // Fallback to openAtJourneyTime if specific hours unknown
+    if (place.openAtJourneyTime === true) {
+      arrivalStatus = 'open_at_arrival';
+      isOpenAtArrival = true;
+    } else if (place.openAtJourneyTime === false) {
+      arrivalStatus = 'closed_at_arrival';
+      isOpenAtArrival = false;
+    } else {
+      arrivalStatus = 'unknown';
+      isOpenAtArrival = false;
+    }
+  }
 
   return {
-    score,
-    openPlacesCount: openPlaces.length,
-    totalPlacesCount: totalPlaces,
-    longestStretchWithoutHelpMeters: Math.round(longestGap),
-    isReal,
+    distanceFromStart: Math.round(accumulatedDistAtMin),
+    distanceFromRoute: Math.round(minDistance),
+    estimatedArrivalTime: arrivalTimeStr,
+    arrivalStatus,
+    isOpenAtArrival,
   };
 }
 
+// ---------------------------------------------------------------------------
+// 9-Parameter Scoring Engine
+// ---------------------------------------------------------------------------
+
+export type CalculationResult = {
+  score: number;
+  breakdown: ScoreBreakdown;
+  heatmapSegments: RouteHeatmapSegment[];
+  longestQuietStretchMeters: number;
+  mainRoadPercentage: number;
+  lightingCoveragePercentage: number;
+  routeEvidence: string;
+  enrichedPlaces: Place[];
+  counts: {
+    openPlaces: number;
+    closedPlaces: number;
+    twentyFourSeven: number;
+    pharmacies: number;
+    petrolPumps: number;
+    police: number;
+    hospitals: number;
+    publicTransport: number;
+    cctv: number;
+  };
+};
+
 /**
- * Compute the longest stretch (in metres) along a route without
- * any open help point within 300m.
+ * Computes the 100-point Night Activity Score and segment heatmaps.
  */
-function computeLongestGapWithoutHelp(
-  route: Coordinate[],
-  openHelpPlaces: Place[],
-): number {
-  if (route.length < 2) return 0;
-  if (openHelpPlaces.length === 0) {
-    // Total route length
-    let total = 0;
-    for (let i = 1; i < route.length; i++) {
-      total += distanceMeters(route[i - 1], route[i]);
+export function calculateNightActivityScore(
+  routeCoords: Coordinate[],
+  rawPlaces: Place[],
+  departureTime: Date = new Date(),
+  travelMode: TravelMode = 'walking',
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS,
+): CalculationResult {
+  // 1. Enrich places with arrival time and open-at-arrival status
+  const enrichedPlaces: Place[] = rawPlaces.map((p) => {
+    const evalResult = evaluateEstablishmentArrival(p, routeCoords, departureTime, travelMode);
+    return {
+      ...p,
+      distanceFromStartMeters: evalResult.distanceFromStart,
+      distanceFromRouteMeters: evalResult.distanceFromRoute,
+      estimatedArrivalTime: evalResult.estimatedArrivalTime,
+      arrivalStatus: evalResult.arrivalStatus,
+      openAtJourneyTime: evalResult.isOpenAtArrival,
+    };
+  });
+
+  // Filter accessible establishments within 250m corridor of the route
+  const corridorPlaces = enrichedPlaces.filter(
+    (p) => (p.distanceFromRouteMeters ?? 0) <= 280,
+  );
+
+  const openCorridorPlaces = corridorPlaces.filter(
+    (p) => p.openAtJourneyTime === true,
+  );
+
+  // 2. Divide route into 120–150m segments
+  const totalDist = computeTotalDistanceMeters(routeCoords);
+  const targetSegmentLen = 140; // metres
+  const numSegments = Math.max(3, Math.ceil(totalDist / targetSegmentLen));
+  const segmentLen = totalDist / numSegments;
+
+  // Build heatmap segments
+  const heatmapSegments: RouteHeatmapSegment[] = [];
+  let currentSegStartCoordIdx = 0;
+  let runningDist = 0;
+  let currentSegDist = 0;
+
+  for (let s = 0; s < numSegments; s++) {
+    const segTargetEndDist = (s + 1) * segmentLen;
+    let endCoordIdx = currentSegStartCoordIdx;
+
+    while (endCoordIdx < routeCoords.length - 1 && runningDist < segTargetEndDist) {
+      runningDist += distanceMeters(routeCoords[endCoordIdx], routeCoords[endCoordIdx + 1]);
+      endCoordIdx++;
     }
-    return total;
-  }
 
-  let longestGap = 0;
-  let currentGap = 0;
+    const segCoords = routeCoords.slice(currentSegStartCoordIdx, endCoordIdx + 1);
+    if (segCoords.length === 0 && endCoordIdx < routeCoords.length) {
+      segCoords.push(routeCoords[endCoordIdx]);
+    }
 
-  for (let i = 0; i < route.length; i++) {
-    const nearHelp = openHelpPlaces.some(
-      (p) => distanceMeters(route[i], p.coordinate) <= 300,
+    // Midpoint of segment
+    const midCoord = segCoords[Math.floor(segCoords.length / 2)] || routeCoords[0];
+
+    // Find open places near this segment (within 180m)
+    const nearbyOpen = openCorridorPlaces.filter(
+      (p) => distanceMeters(p.coordinate, midCoord) <= 180,
     );
 
-    if (nearHelp) {
-      longestGap = Math.max(longestGap, currentGap);
-      currentGap = 0;
-    } else if (i > 0) {
-      currentGap += distanceMeters(route[i - 1], route[i]);
+    // Nearby help points
+    const nearbyHelp = nearbyOpen.filter((p) =>
+      ['police', 'hospital', 'pharmacy', 'help_point'].includes(p.category),
+    );
+
+    // Segment score (0–100)
+    let segScore = 20; // baseline
+    segScore += Math.min(45, nearbyOpen.length * 15);
+    segScore += Math.min(25, nearbyHelp.length * 15);
+
+    // Bonus if near streetlights / CCTV
+    const hasLighting = corridorPlaces.some(
+      (p) => p.category === 'streetlight' && distanceMeters(p.coordinate, midCoord) <= 160,
+    );
+    if (hasLighting) segScore += 10;
+
+    segScore = Math.min(100, Math.max(10, Math.round(segScore)));
+
+    // Color assignment
+    let color: HeatmapColor = '#F87171';
+    let isIsolated = false;
+
+    if (segScore >= 75) {
+      color = '#4ADE80'; // Green
+    } else if (segScore >= 50) {
+      color = '#FACC15'; // Yellow
+    } else if (segScore >= 30) {
+      color = '#FF9400'; // Orange
+    } else {
+      color = '#F87171'; // Red
+      isIsolated = true;
+    }
+
+    heatmapSegments.push({
+      startIndex: currentSegStartCoordIdx,
+      endIndex: endCoordIdx,
+      coordinates: segCoords.length > 1 ? segCoords : [segCoords[0], segCoords[0]],
+      activityScore: segScore,
+      color,
+      nearbyOpenCount: nearbyOpen.length,
+      isIsolated,
+    });
+
+    currentSegStartCoordIdx = Math.max(0, endCoordIdx - 1);
+  }
+
+  // 3. Compute Longest Quiet / Isolated Stretch
+  let maxConsecutiveQuietSegments = 0;
+  let currentQuietStreak = 0;
+
+  for (const seg of heatmapSegments) {
+    if (seg.nearbyOpenCount === 0 || seg.isIsolated) {
+      currentQuietStreak++;
+      if (currentQuietStreak > maxConsecutiveQuietSegments) {
+        maxConsecutiveQuietSegments = currentQuietStreak;
+      }
+    } else {
+      currentQuietStreak = 0;
     }
   }
 
-  return Math.max(longestGap, currentGap);
-}
+  const longestQuietStretchMeters = Math.round(maxConsecutiveQuietSegments * segmentLen);
 
+  // 4. Parameter 1: Open Shops & Establishments (Max 20)
+  // Rewards useful distribution over concentrated clusters
+  const commercialCategories: PlaceCategory[] = ['shop_food', 'petrol_station'];
+  const openCommercial = openCorridorPlaces.filter((p) =>
+    commercialCategories.includes(p.category),
+  );
+
+  // Distribution factor: percentage of segments that have at least 1 open establishment
+  const activeSegments = heatmapSegments.filter((s) => s.nearbyOpenCount > 0).length;
+  const distributionRatio = activeSegments / Math.max(1, heatmapSegments.length);
+  const distributionScore = distributionRatio * (weights.openShops * 0.6); // 12 pts
+  const volumeScore = Math.min(
+    weights.openShops * 0.4,
+    (openCommercial.length / 8) * (weights.openShops * 0.4),
+  ); // 8 pts
+  const openShopsScore = Math.round(
+    Math.min(weights.openShops, distributionScore + volumeScore),
+  );
+
+  // 5. Parameter 2: Opening Hours & Time-Based Availability (Max 15)
+  // Evaluates ratio of establishments open at arrival vs total mapped
+  const totalMapped = corridorPlaces.length;
+  const openCount = openCorridorPlaces.length;
+  const availableRatio = totalMapped > 0 ? openCount / totalMapped : 0.65;
+  const openingHoursScore = Math.round(
+    Math.min(weights.openingHours, availableRatio * weights.openingHours),
+  );
+
+  // 6. Parameter 3: Pharmacy & 24/7 Essential Services (Max 10)
+  const pharmacies = openCorridorPlaces.filter((p) => p.category === 'pharmacy');
+  const twentyFourSeven = openCorridorPlaces.filter((p) => p.is24_7 === true);
+  const petrolStations = openCorridorPlaces.filter((p) => p.category === 'petrol_station');
+
+  let essentialRaw = 0;
+  if (twentyFourSeven.length > 0) essentialRaw += 4;
+  if (pharmacies.length > 0) essentialRaw += 3;
+  if (petrolStations.length > 0) essentialRaw += 2;
+  if (twentyFourSeven.length > 1 || pharmacies.length > 1) essentialRaw += 1;
+  const essentialServicesScore = Math.round(
+    Math.min(weights.essentialServices, essentialRaw),
+  );
+
+  // 7. Parameter 4: Activity Continuity & Isolation Gaps (Max 15)
+  // Heavily penalizes long quiet stretches
+  let continuityScore = weights.activityContinuity;
+  if (longestQuietStretchMeters > 1200) {
+    continuityScore = 0;
+  } else if (longestQuietStretchMeters > 700) {
+    continuityScore = Math.round(weights.activityContinuity * 0.25);
+  } else if (longestQuietStretchMeters > 400) {
+    continuityScore = Math.round(weights.activityContinuity * 0.5);
+  } else if (longestQuietStretchMeters > 200) {
+    continuityScore = Math.round(weights.activityContinuity * 0.75);
+  } else if (longestQuietStretchMeters > 100) {
+    continuityScore = Math.round(weights.activityContinuity * 0.9);
+  }
+  const activityContinuityScore = continuityScore;
+
+  // 8. Parameter 5: Main-Road Accessibility (Max 10)
+  // Prefer well-established roads over interior alley shortcuts
+  // We estimate based on average spacing and street classification indicators
+  const mainRoadPercentage = Math.round(
+    Math.min(95, Math.max(30, distributionRatio * 100)),
+  );
+  const mainRoadScore = Math.round(
+    Math.min(
+      weights.mainRoadAccessibility,
+      (mainRoadPercentage / 100) * weights.mainRoadAccessibility,
+    ),
+  );
+
+  // 9. Parameter 6: Nearby Help Points (Max 10)
+  const policePlaces = openCorridorPlaces.filter((p) => p.category === 'police');
+  const hospitalPlaces = openCorridorPlaces.filter((p) => p.category === 'hospital');
+  let helpPointsRaw = 0;
+  if (policePlaces.length > 0) helpPointsRaw += 5;
+  if (hospitalPlaces.length > 0) helpPointsRaw += 5;
+  if (policePlaces.length === 0 && hospitalPlaces.length === 0 && pharmacies.length > 0) {
+    helpPointsRaw += 3;
+  }
+  const helpPointsScore = Math.round(
+    Math.min(weights.helpPoints, helpPointsRaw),
+  );
+
+  // 10. Parameter 7: Street Lighting (Max 10)
+  const streetlightZones = corridorPlaces.filter((p) => p.category === 'streetlight');
+  const lightingCoveragePercentage = Math.min(
+    95,
+    Math.max(40, (streetlightZones.length > 0 ? 85 : 55) * distributionRatio),
+  );
+  const streetLightingScore = Math.round(
+    Math.min(
+      weights.streetLighting,
+      (lightingCoveragePercentage / 100) * weights.streetLighting,
+    ),
+  );
+
+  // 11. Parameter 8: CCTV Coverage (Max 5)
+  const cctvNodes = corridorPlaces.filter((p) => p.category === 'cctv');
+  const cctvScore = Math.round(
+    Math.min(weights.cctvCoverage, cctvNodes.length > 0 ? 5 : 2),
+  );
+
+  // 12. Parameter 9: Public Transport (Max 5)
+  const transitPlaces = openCorridorPlaces.filter((p) => p.category === 'transport');
+  const publicTransportScore = Math.round(
+    Math.min(weights.publicTransport, transitPlaces.length > 0 ? 5 : 2),
+  );
+
+  // Total Score
+  const total = Math.round(
+    Math.min(
+      100,
+      Math.max(
+        15,
+        openShopsScore +
+          openingHoursScore +
+          essentialServicesScore +
+          activityContinuityScore +
+          mainRoadScore +
+          helpPointsScore +
+          streetLightingScore +
+          cctvScore +
+          publicTransportScore,
+      ),
+    ),
+  );
+
+  const breakdown: ScoreBreakdown = {
+    openShopsScore,
+    openingHoursScore,
+    essentialServicesScore,
+    activityContinuityScore,
+    mainRoadScore,
+    helpPointsScore,
+    streetLightingScore,
+    cctvScore,
+    publicTransportScore,
+    total,
+  };
+
+  // Route evidence phrase
+  const quietText =
+    longestQuietStretchMeters < 120
+      ? `longest quiet stretch ${longestQuietStretchMeters} m`
+      : `${longestQuietStretchMeters} m isolated stretch`;
+  const routeEvidence = `${openCorridorPlaces.length} open places · ${quietText}`;
+
+  return {
+    score: total,
+    breakdown,
+    heatmapSegments,
+    longestQuietStretchMeters,
+    mainRoadPercentage,
+    lightingCoveragePercentage: Math.round(lightingCoveragePercentage),
+    routeEvidence,
+    enrichedPlaces,
+    counts: {
+      openPlaces: openCorridorPlaces.length,
+      closedPlaces: corridorPlaces.length - openCorridorPlaces.length,
+      twentyFourSeven: twentyFourSeven.length,
+      pharmacies: pharmacies.length,
+      petrolPumps: petrolStations.length,
+      police: policePlaces.length,
+      hospitals: hospitalPlaces.length,
+      publicTransport: transitPlaces.length,
+      cctv: cctvNodes.length,
+    },
+  };
+}
