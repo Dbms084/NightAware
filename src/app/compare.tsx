@@ -43,6 +43,15 @@ import { RouteDetailSheet } from '@/components/map/RouteDetailSheet';
 import { SafetyReportModal } from '@/components/ui/SafetyReportModal';
 import { RouteComparisonSkeletonGroup } from '@/components/ui/Skeleton';
 import { LocationSearchModal, type SearchField } from '@/components/ui/LocationSearchModal';
+import { NavigationSidebar } from '@/components/ui/NavigationSidebar';
+import {
+  WatchOverMeModal,
+  ManageContactsModal,
+  GuardianActiveBanner,
+  SafetyCheckInModal,
+} from '@/components/guardian';
+import { useGuardianContacts } from '@/features/guardian/hooks/useGuardianContacts';
+import { useGuardianTracker } from '@/features/guardian/hooks/useGuardianTracker';
 import { DEMO_ORIGIN, DEMO_DESTINATION } from '@/data/mock-places';
 import { MOCK_ROUTES } from '@/data/mock-routes';
 import { getPlacesNearRoute } from '@/features/places/services/place-provider';
@@ -52,6 +61,7 @@ const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 const CATEGORY_FILTERS = [
   { id: 'all', label: 'All POIs' },
+  { id: 'open_only', label: '🟢 Open Only' },
   { id: 'pharmacy', label: '💊 Pharmacies' },
   { id: 'hospital', label: '🏥 Hospitals' },
   { id: 'police', label: '👮 Police' },
@@ -121,6 +131,13 @@ export default function CompareScreen() {
   const [isNavigating, setIsNavigating] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
 
+  // Guardian & Watch Over Me state
+  const { contacts, primaryContact } = useGuardianContacts();
+  const [isWatchOverMeOpen, setIsWatchOverMeOpen] = useState(false);
+  const [isContactsModalOpen, setIsContactsModalOpen] = useState(false);
+  const [isGuardianActive, setIsGuardianActive] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
   // Fetch routes whenever origin, destination or mode changes
   useEffect(() => {
     let isMounted = true;
@@ -155,6 +172,27 @@ export default function CompareScreen() {
 
   const selectedRoute = routes.find((r) => r.id === selectedId) ?? routes[0] ?? null;
 
+  // Autonomous Guardian Watchdogs: Corridor Deviation, Stoppage & Battery
+  const {
+    currentCoord: guardianCurrentCoord,
+    deviationMeters,
+    isOffCorridor,
+    isArrived,
+    activeAlert,
+    stoppedDurationMinutes,
+    acknowledgeAlert,
+    simulateDeviation,
+    simulateStoppage,
+    simulateArrival,
+    simulateBatteryLow,
+  } = useGuardianTracker({
+    isGuardianActive: isNavigating && isGuardianActive,
+    route: selectedRoute,
+    destinationCoord: destination,
+    destinationName,
+    primaryContact,
+  });
+
   // Load places near the selected route
   useEffect(() => {
     if (!selectedRoute) {
@@ -176,14 +214,9 @@ export default function CompareScreen() {
     setSelectedId(id);
   }, []);
 
-  const handleShareJourney = async () => {
-    if (!selectedRoute) return;
-    try {
-      await Share.share({
-        message: `I'm following the NightAware ${selectedRoute.label} (${selectedRoute.durationMinutes} min, Night Activity Score: ${selectedRoute.nightActivityScore}/100) towards ${destination.latitude.toFixed(4)}, ${destination.longitude.toFixed(4)}.`,
-      });
-    } catch {}
-  };
+  const handleShareJourney = useCallback(() => {
+    setIsWatchOverMeOpen(true);
+  }, []);
 
   // Map framing region: centers around mid-point of journey
   const mapRegion = useMemo(() => {
@@ -209,6 +242,15 @@ export default function CompareScreen() {
   // Filtered establishments on map by active category filter
   const filteredPlaces = useMemo(() => {
     if (selectedCategory === 'all') return routePlaces;
+    if (selectedCategory === 'open_only') {
+      return routePlaces.filter(
+        (p) =>
+          p.is24_7 ||
+          p.arrivalStatus === 'open_at_arrival' ||
+          p.arrivalStatus === 'closing_soon' ||
+          p.openAtJourneyTime === true,
+      );
+    }
     return routePlaces.filter((p) => p.category === selectedCategory);
   }, [routePlaces, selectedCategory]);
 
@@ -249,24 +291,43 @@ export default function CompareScreen() {
           </Text>
         </View>
 
-        {/* Heatmap toggle / End navigation button */}
-        {isNavigating ? (
+        {/* Top Right Controls: End/Heatmap + ☰ Sidebar Menu Button */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          {isNavigating ? (
+            <Pressable
+              style={styles.endNavButton}
+              onPress={() => {
+                setIsNavigating(false);
+                setIsGuardianActive(false);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="End journey navigation"
+            >
+              <Text style={styles.endNavText}>End</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              style={[styles.heatmapToggle, showHeatmap && styles.heatmapToggleActive]}
+              onPress={() => setShowHeatmap(!showHeatmap)}
+              accessibilityRole="button"
+              accessibilityLabel="Toggle road activity heatmap"
+            >
+              <Text style={[styles.heatmapToggleText, showHeatmap && styles.heatmapToggleTextActive]}>
+                {showHeatmap ? 'Heatmap ON' : 'Heatmap'}
+              </Text>
+            </Pressable>
+          )}
+
+          {/* ☰ Sidebar Drawer Menu Button */}
           <Pressable
-            style={styles.endNavButton}
-            onPress={() => setIsNavigating(false)}
+            style={styles.menuIconBtn}
+            onPress={() => setIsSidebarOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Open side settings menu"
           >
-            <Text style={styles.endNavText}>End</Text>
+            <Text style={styles.menuIconBtnText}>☰</Text>
           </Pressable>
-        ) : (
-          <Pressable
-            style={[styles.heatmapToggle, showHeatmap && styles.heatmapToggleActive]}
-            onPress={() => setShowHeatmap(!showHeatmap)}
-          >
-            <Text style={[styles.heatmapToggleText, showHeatmap && styles.heatmapToggleTextActive]}>
-              {showHeatmap ? 'Heatmap ON' : 'Heatmap'}
-            </Text>
-          </Pressable>
-        )}
+        </View>
       </View>
 
       {/* SUB-HEADER: DATA STATUS */}
@@ -280,6 +341,21 @@ export default function CompareScreen() {
             : 'DEMO JOURNEY · Mapped nighttime activity indicators'}
         </Text>
       </View>
+
+      {/* ACTIVE GUARDIAN BANNER */}
+      {isNavigating && isGuardianActive && (
+        <GuardianActiveBanner
+          destinationName={destinationName}
+          primaryContact={primaryContact}
+          deviationMeters={deviationMeters}
+          isOffCorridor={isOffCorridor}
+          isArrived={isArrived}
+          onEndJourney={() => {
+            setIsNavigating(false);
+            setIsGuardianActive(false);
+          }}
+        />
+      )}
 
       {/* CORRIDOR BAR: START -> DESTINATION with EDIT BUTTON */}
       {!isNavigating && (
@@ -440,9 +516,18 @@ export default function CompareScreen() {
           >
             {CATEGORY_FILTERS.map((f) => {
               const isActive = selectedCategory === f.id;
-              const count = f.id === 'all'
-                ? routePlaces.length
-                : routePlaces.filter((p) => p.category === f.id).length;
+              const count =
+                f.id === 'all'
+                  ? routePlaces.length
+                  : f.id === 'open_only'
+                  ? routePlaces.filter(
+                      (p) =>
+                        p.is24_7 ||
+                        p.arrivalStatus === 'open_at_arrival' ||
+                        p.arrivalStatus === 'closing_soon' ||
+                        p.openAtJourneyTime === true,
+                    ).length
+                  : routePlaces.filter((p) => p.category === f.id).length;
 
               return (
                 <Pressable
@@ -601,13 +686,76 @@ export default function CompareScreen() {
                     >
                       {route.routeEvidence}
                     </Text>
+
+                    {/* Describe Route & Watch Over Me Buttons on Selected Profile Card */}
+                    {isSelected && (
+                      <>
+                        <Pressable
+                          style={[
+                            styles.describeRouteButton,
+                            {
+                              borderColor: profileColor,
+                              backgroundColor:
+                                route.profileType === 'safest'
+                                  ? 'rgba(255, 138, 0, 0.12)'
+                                  : route.profileType === 'balanced'
+                                  ? 'rgba(56, 189, 248, 0.12)'
+                                  : 'rgba(248, 113, 113, 0.12)',
+                            },
+                          ]}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            setShowDetail(true);
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Describe route and factors for ${route.label}`}
+                        >
+                          <View style={styles.describeRouteLeft}>
+                            <Text style={styles.describeRouteIcon}>📋</Text>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.describeRouteTitle, { color: profileColor }]}>
+                                Describe {route.label} Route
+                              </Text>
+                              <Text style={styles.describeRouteSubtitle}>
+                                View all {routePlaces.length} POIs & safety factors taken into account
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={[styles.describeRouteChevron, { color: profileColor }]}>›</Text>
+                        </Pressable>
+
+                        {/* Watch Over Me Action on Selected Card */}
+                        <Pressable
+                          style={styles.watchOverMeCardBtn}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            setIsWatchOverMeOpen(true);
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel="Watch Over Me Live Trip Sharing & Guardian"
+                        >
+                          <View style={styles.describeRouteLeft}>
+                            <Text style={styles.describeRouteIcon}>🛡️</Text>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.watchOverMeTitle}>
+                                Watch Over Me · Live Companion
+                              </Text>
+                              <Text style={styles.describeRouteSubtitle}>
+                                Share live ETA on WhatsApp/SMS & alert contacts ({contacts.length} saved)
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={styles.watchOverMeChevron}>›</Text>
+                        </Pressable>
+                      </>
+                    )}
                   </Pressable>
                 );
               })
             )}
           </View>
 
-          {/* "Why Score?" Explanation / Inspector Bar */}
+          {/* "Describe Route & Breakdown" Bar */}
           {selectedRoute && (
             <Pressable
               style={styles.scoreExplanationBar}
@@ -617,12 +765,12 @@ export default function CompareScreen() {
               <View style={styles.explanationTextCol}>
                 <View style={styles.explanationHeadingRow}>
                   <Text style={styles.explanationTitle}>
-                    Why {selectedRoute.nightActivityScore}? Detailed breakdown & POIs
+                    Why Score {selectedRoute.nightActivityScore}? Full Analysis & Places
                   </Text>
                   <Text style={styles.chevronIcon}>›</Text>
                 </View>
                 <Text style={styles.explanationBody}>
-                  Tap to inspect the 9-parameter score breakdown, open establishments, and direct call buttons.
+                  Tap to view lighting %, quiet gaps, and all categorized POIs along this path.
                 </Text>
               </View>
             </Pressable>
@@ -767,6 +915,68 @@ export default function CompareScreen() {
           setDestination(coord);
           setDestinationName(name || fullAddress);
         }}
+      />
+
+      {/* WATCH OVER ME MODAL */}
+      {selectedRoute && (
+        <WatchOverMeModal
+          visible={isWatchOverMeOpen}
+          onClose={() => setIsWatchOverMeOpen(false)}
+          route={selectedRoute}
+          destinationName={destinationName}
+          originName={originName}
+          originCoord={origin}
+          destinationCoord={destination}
+          openPlacesCount={
+            routePlaces.filter(
+              (p) =>
+                p.is24_7 ||
+                p.arrivalStatus === 'open_at_arrival' ||
+                p.arrivalStatus === 'closing_soon' ||
+                p.openAtJourneyTime === true,
+            ).length
+          }
+          onActivateGuardian={() => {
+            setIsGuardianActive(true);
+            setIsNavigating(true);
+          }}
+        />
+      )}
+
+      {/* MANAGE CONTACTS MODAL */}
+      <ManageContactsModal
+        visible={isContactsModalOpen}
+        onClose={() => setIsContactsModalOpen(false)}
+      />
+
+      {/* AUTONOMOUS SAFETY CHECK-IN / DEVIATION / STOPPAGE ALERT MODAL */}
+      <SafetyCheckInModal
+        visible={Boolean(activeAlert)}
+        alertType={activeAlert}
+        deviationMeters={deviationMeters}
+        stoppedDurationMinutes={stoppedDurationMinutes}
+        currentCoord={guardianCurrentCoord}
+        destinationName={destinationName}
+        primaryContact={primaryContact}
+        onConfirmSafe={acknowledgeAlert}
+        onSosTriggered={acknowledgeAlert}
+      />
+
+      {/* NAVIGATION SIDEBAR DRAWER (Slide-out menu with demo mode toggle) */}
+      <NavigationSidebar
+        visible={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        isNavigating={isNavigating}
+        isGuardianActive={isGuardianActive}
+        contactsCount={contacts.length}
+        onOpenContacts={() => setIsContactsModalOpen(true)}
+        showHeatmap={showHeatmap}
+        onToggleHeatmap={() => setShowHeatmap(!showHeatmap)}
+        onSimulateDeviation={simulateDeviation}
+        onSimulateStoppage={simulateStoppage}
+        onSimulateBatteryLow={simulateBatteryLow}
+        onSimulateArrival={simulateArrival}
+        onResetSimulation={acknowledgeAlert}
       />
     </SafeAreaView>
   );
@@ -1213,6 +1423,90 @@ const styles = StyleSheet.create({
   },
   fastestEvidenceText: {
     color: '#fca5a5',
+  },
+  describeRouteButton: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1.5,
+  },
+  describeRouteLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  describeRouteIcon: {
+    fontSize: 18,
+  },
+  describeRouteTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  describeRouteSubtitle: {
+    fontSize: 10,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  describeRouteChevron: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginLeft: 6,
+  },
+  contactsTopBtn: {
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#161d26',
+    borderWidth: 1,
+    borderColor: '#293544',
+  },
+  contactsTopBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#cbd5e1',
+  },
+  watchOverMeCardBtn: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#ff8a00',
+    backgroundColor: 'rgba(255, 138, 0, 0.12)',
+  },
+  watchOverMeTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#ff8a00',
+  },
+  watchOverMeChevron: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#ff8a00',
+    marginLeft: 6,
+  },
+  menuIconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#1b222c',
+    borderWidth: 1,
+    borderColor: '#2b3644',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuIconBtnText: {
+    fontSize: 16,
+    color: '#e2e8f0',
+    fontWeight: '700',
   },
   scoreExplanationBar: {
     flexDirection: 'row',
