@@ -71,6 +71,7 @@ export function createSafeArrivalMessage(destinationName: string): string {
 export function createEmergencyAlertMessage(
   destinationName: string,
   currentCoord?: { latitude: number; longitude: number },
+  alertReason?: string,
 ): string {
   const locLink = currentCoord
     ? `https://maps.google.com/?q=${currentCoord.latitude.toFixed(5)},${currentCoord.longitude.toFixed(5)}`
@@ -79,8 +80,9 @@ export function createEmergencyAlertMessage(
   return (
     `🚨 EMERGENCY SOS: I NEED HELP!\n` +
     `--------------------------------\n` +
-    `I was traveling to ${destinationName}.\n` +
-    `My live location: ${locLink}\n` +
+    (alertReason ? `⚠️ Alert: ${alertReason}\n` : '') +
+    `📍 Traveling to: ${destinationName}\n` +
+    `🗺️ My live location: ${locLink}\n` +
     `Please call me or check on me immediately.\n` +
     `Sent via NightAware Emergency SOS`
   );

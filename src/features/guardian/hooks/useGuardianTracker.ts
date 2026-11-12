@@ -34,27 +34,36 @@ export function useGuardianTracker({
 
   // References to track movement over time
   const lastCoordRef = useRef<Coordinate | null>(null);
-  const lastMoveTimeRef = useRef<number>(Date.now());
+  const lastMoveTimeRef = useRef<number>(0);
   const batteryCheckedRef = useRef<boolean>(false);
   const dismissedAlertsRef = useRef<{ [key: string]: number }>({});
   const activeAlertRef = useRef<AlertType | null>(activeAlert);
+  const [prevGuardianActive, setPrevGuardianActive] = useState(isGuardianActive);
 
   useEffect(() => {
     activeAlertRef.current = activeAlert;
   }, [activeAlert]);
 
-  // Reset state when guardian session starts or ends
-  useEffect(() => {
+  // Reset state when guardian session ends
+  if (prevGuardianActive !== isGuardianActive) {
+    setPrevGuardianActive(isGuardianActive);
     if (!isGuardianActive) {
       setCurrentCoord(null);
       setDeviationMeters(0);
       setIsOffCorridor(false);
       setIsArrived(false);
       setActiveAlert(null);
+    }
+  }
+
+  useEffect(() => {
+    if (!isGuardianActive) {
       lastCoordRef.current = null;
-      lastMoveTimeRef.current = Date.now();
+      lastMoveTimeRef.current = 0;
       batteryCheckedRef.current = false;
       dismissedAlertsRef.current = {};
+    } else if (lastMoveTimeRef.current === 0) {
+      lastMoveTimeRef.current = Date.now();
     }
   }, [isGuardianActive]);
 
@@ -137,6 +146,9 @@ export function useGuardianTracker({
             const reached = isUserAtDestination(newCoord, destinationCoord, 50);
             if (reached) {
               setIsArrived(true);
+              if (!dismissedAlertsRef.current['arrival'] && !activeAlertRef.current) {
+                setActiveAlert('arrival');
+              }
             }
 
             // 2. Check Corridor Deviation (> 200 meters)
@@ -208,7 +220,7 @@ export function useGuardianTracker({
   const simulateArrival = useCallback(() => {
     setIsArrived(true);
     setIsOffCorridor(false);
-    setActiveAlert(null);
+    setActiveAlert('arrival');
   }, []);
 
   const simulateBatteryLow = useCallback(() => {
