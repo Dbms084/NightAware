@@ -128,14 +128,19 @@ export function PlaceMarker(props: PlaceMarkerProps) {
   const place = props.place;
 
   let icon = PLACE_CATEGORY_ICONS[category] || '📍';
+  let label = PLACE_CATEGORY_LABELS[category] || 'Place';
   if (category === 'transport') {
     if (/metro|subway|mrt/i.test(name)) {
       icon = '🚇';
-    } else if (/bus/i.test(name)) {
+      label = 'Metro Station';
+    } else if (/terminus|terminal|depot|isbt/i.test(name)) {
+      icon = '🏢';
+      label = 'Bus Terminus / Stand';
+    } else {
       icon = '🚏';
+      label = 'Bus Stop / Stand';
     }
   }
-  const label = PLACE_CATEGORY_LABELS[category] || 'Place';
 
   // Determine badge background color based on category & status
   let badgeColor = PLACE_MARKER_COLORS[category] || '#64748b';

@@ -68,7 +68,7 @@ const CATEGORY_FILTERS = [
   { id: 'police', label: '👮 Police' },
   { id: 'shop_food', label: '🏪 Open Shops' },
   { id: 'petrol_station', label: '⛽ Petrol' },
-  { id: 'transport', label: '🚇 Transit' },
+  { id: 'transport', label: '🚏 Bus & Transit' },
 ];
 
 export default function CompareScreen() {

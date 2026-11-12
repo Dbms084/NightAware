@@ -1346,3 +1346,66 @@ export function findNearbyRegisteredTransitStops(
   matches.sort((a, b) => (a.distanceFromRouteMeters ?? 0) - (b.distanceFromRouteMeters ?? 0));
   return matches;
 }
+
+/**
+ * Searches the registered transit registry for real Metro stations, Bus Terminals,
+ * and Bus Stops along an entire route corridor from Point A to Point B.
+ */
+export function findNearbyRegisteredTransitStopsAlongRoute(
+  routeCoordinates: Coordinate[],
+  metroRadiusMeters: number = 4500,
+  busCorridorBufferMeters: number = 1200,
+): Place[] {
+  if (routeCoordinates.length === 0) return [];
+  if (routeCoordinates.length === 1) {
+    return findNearbyRegisteredTransitStops(routeCoordinates[0], metroRadiusMeters, busCorridorBufferMeters);
+  }
+
+  const origin = routeCoordinates[0];
+  const destination = routeCoordinates[routeCoordinates.length - 1];
+  const matches: Place[] = [];
+  const seenIds = new Set<string>();
+
+  for (const stop of REGISTERED_TRANSIT_STOPS) {
+    const distToOrigin = distanceMeters(origin, stop.coordinate);
+    const distToDest = distanceMeters(destination, stop.coordinate);
+
+    // Endpoint reach: Metro stations up to metroRadiusMeters, Bus up to 2500m
+    const isMetro = stop.type === 'metro';
+    const maxEndpointDist = isMetro ? metroRadiusMeters : 2500;
+
+    let isMatch = distToOrigin <= maxEndpointDist || distToDest <= maxEndpointDist;
+    let minRouteDist = Math.min(distToOrigin, distToDest);
+
+    // If not within endpoint reach, check distance to route polyline
+    if (!isMatch) {
+      for (let i = 0; i < routeCoordinates.length - 1; i += 2) {
+        const d = distanceMeters(routeCoordinates[i], stop.coordinate);
+        if (d < minRouteDist) minRouteDist = d;
+        if (d <= busCorridorBufferMeters) {
+          isMatch = true;
+          break;
+        }
+      }
+    }
+
+    if (isMatch && !seenIds.has(stop.id)) {
+      seenIds.add(stop.id);
+      matches.push({
+        id: `reg-${stop.id}`,
+        name: stop.name,
+        category: 'transport',
+        coordinate: stop.coordinate,
+        openAtJourneyTime: true,
+        openTime: stop.openTime,
+        closeTime: stop.closeTime,
+        is24_7: stop.is24_7,
+        distanceFromRouteMeters: Math.round(minRouteDist),
+        dataSource: 'provider',
+      });
+    }
+  }
+
+  matches.sort((a, b) => (a.distanceFromRouteMeters ?? 0) - (b.distanceFromRouteMeters ?? 0));
+  return matches;
+}
