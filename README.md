@@ -30,19 +30,29 @@ Fully configurable weighted evaluation model:
 | **TOTAL** | **100** | Configurable via `DEFAULT_SCORING_WEIGHTS` |
 
 ### 3. Zero-Cost OpenStreetMap & Overpass Engine (100% Free — No Google Billing Required)
-- **OpenStreetMap OSRM Routing:** Real-world street routing via `router.project-osrm.org` with road waypoint snapping (`/nearest`).
+- **Valhalla Routing Engine:** Real-world street routing via `https://valhalla1.openstreetmap.de/route` with polyline6 shape decoding and alternate route support.
 - **Live OpenStreetMap Overpass POI Engine:** Live queries for real-world pharmacies, hospitals, police stations, transit hubs, and 24/7 supermarkets without requiring a credit card or Google Cloud billing.
 - **Dynamic Corridor Generator:** Intelligently distributes realistic nighttime establishments along the exact road coordinates of the route, ensuring rich listings in any city worldwide.
 - **Optional Google Maps Support:** Seamless automatic upgrade to Google Routes API v2 and Places API (New) if a billed Google Cloud key is provided in `.env`.
 
-### 4. "Describe Route" Panel & Complete Establishment Directory
+### 4. Honest Route Recommendation Engine (1–3 Routes, No Fabrication)
+Unlike the earlier version that always displayed 3 routes, the engine now returns **only the routes that were actually found** for the chosen origin and destination:
+
+- **No offline fallback:** If the Valhalla router returns fewer than 3 routes, the app no longer fabricates or repeats demo data. It shows exactly what was found.
+- **1 route only:** Labeled `★ Recommended` and selected by default.
+- **2 routes:** Labeled `Safer profile` + `Fastest` (or `Balanced` if available).
+- **3 routes:** `Safer profile`, `Balanced`, `Fastest` — the full comparison layout.
+- **Empty slots** (when 1–2 routes exist) are visually marked as **"Not available"** with a dashed border and an explanatory note, so the user always sees a clear 3-slot layout without misleading data.
+- **Recommendation logic:** The `★ Recommended` badge always points to the route with the **highest Night Activity Score** among the available candidates.
+
+### 5. "Describe Route" Panel & Complete Establishment Directory
 - **"📋 Describe Route" Action:** Dedicated button on each active route profile card.
 - **Categorized Places Directory:** Lists all establishments along the route categorized by `💊 Pharmacies`, `🏥 Hospitals`, `👮 Police`, `🏪 Open Shops`, `⛽ Petrol`, and `🚇 Transit`.
 - **Distance from Start:** Shows exact distance along the route for every single facility (e.g. `📍 350m along route`).
 - **Estimated Arrival Time:** Displays when you will reach each spot based on your departure time and travel speed (e.g. `⏰ Arrive ~10:48 PM`).
 - **One-Tap Phone Calling:** Direct call button (`📞 Call ...`) for emergency services and verified establishments.
 
-### 5. Open Shops & Arrival-Time Verification
+### 6. Open Shops & Arrival-Time Verification
 - **"🟢 Open Only" Filter Chip:** Quick filter pill on the map that hides closed shops and highlights only open establishments with active counts (e.g. `🟢 Open Only (8)`).
 - **Status Badges:** Each establishment card clearly displays its status:
   - `⭐ 24/7 OPEN` (Round-the-clock emergency access)
@@ -51,7 +61,7 @@ Fully configurable weighted evaluation model:
   - `🔴 CLOSED AT ARRIVAL` (Closed by the time you reach that spot)
 - **Operating Hours Display:** Explicitly shows scheduled hours (e.g. `🕒 08:00 – 23:30` or `🕒 Open 24 Hours`).
 
-### 6. Interactive Dark-Theme Map & Cross-Platform Web Preview
+### 7. Interactive Dark-Theme Map & Cross-Platform Web Preview
 - **Cross-Platform Support:** Runs natively on Android (via `react-native-maps` and Expo Go) AND directly in your laptop web browser via dedicated `.web.tsx` vector map components.
 - **Simultaneous Polylines:** All 3 candidate routes rendered with glowing selected halos.
 - **Road-Segment Activity Heatmap:** Toggleable visual overlay showing safety indicators along individual segments:
@@ -62,12 +72,12 @@ Fully configurable weighted evaluation model:
 - **Interactive Map Markers:** Color-coded pins with active status badges (`●`), hover tooltips, and category filters.
 - **Active Navigation Mode:** Turn-by-turn guidance HUD, arrival countdowns, upcoming assistance ahead alerts, and an emergency SOS 112 button.
 
-### 7. Live Global Search (Zero Hardcoded Defaults)
+### 8. Live Global Search (Zero Hardcoded Defaults)
 - OpenStreetMap **Photon** (`photon.komoot.io`) & **Nominatim** live search.
 - Works in any city globally with no forced start or destination defaults.
 - Clean search modal with quick GPS pickup option.
 
-### 8. Watch over me : Active Night Companion & Safety Watchdog
+### 9. Watch over me : Active Night Companion & Safety Watchdog
 The **Watch over me** feature transforms NightAware from a static route comparison tool into an **active, real-time nighttime safety companion**. Once a user selects their preferred safe route (e.g. *Safer profile* with open pharmacies and high activity), activating **Watch over me** enables autonomous on-device monitoring to protect the journey until safe arrival.
 
 #### Key Capabilities:

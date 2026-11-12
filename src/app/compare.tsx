@@ -52,8 +52,6 @@ import {
 } from '@/components/guardian';
 import { useGuardianContacts } from '@/features/guardian/hooks/useGuardianContacts';
 import { useGuardianTracker } from '@/features/guardian/hooks/useGuardianTracker';
-import { DEMO_ORIGIN, DEMO_DESTINATION } from '@/data/mock-places';
-import { MOCK_ROUTES } from '@/data/mock-routes';
 import { getPlacesNearRoute } from '@/features/places/services/place-provider';
 import { getRouteOptions, ROUTE_COLORS_BY_PROFILE } from '@/features/routes/services/route-provider';
 
@@ -79,32 +77,51 @@ export default function CompareScreen() {
     dlat?: string;
     dlng?: string;
     mode?: string;
+    departure?: string;
     oname?: string;
     dname?: string;
   }>();
 
-  // Parse initial coordinates
-  const initialOrigin: Coordinate = useMemo(() => {
+  // Parse initial coordinates. If the home screen did not forward valid
+  // coordinates we keep them null and show an empty state instead of falling
+  // back to synthetic demo coordinates.
+  const initialOrigin: Coordinate | null = useMemo(() => {
     if (params.olat != null && params.olng != null) {
       const lat = parseFloat(params.olat);
       const lng = parseFloat(params.olng);
       if (!isNaN(lat) && !isNaN(lng)) return { latitude: lat, longitude: lng };
     }
-    return DEMO_ORIGIN;
+    return null;
   }, [params.olat, params.olng]);
 
-  const initialDest: Coordinate = useMemo(() => {
+  const initialDest: Coordinate | null = useMemo(() => {
     if (params.dlat != null && params.dlng != null) {
       const lat = parseFloat(params.dlat);
       const lng = parseFloat(params.dlng);
       if (!isNaN(lat) && !isNaN(lng)) return { latitude: lat, longitude: lng };
     }
-    return DEMO_DESTINATION;
+    return null;
   }, [params.dlat, params.dlng]);
 
+  // Parse the departure time forwarded from the home screen. Invalid or
+  // missing values degrade gracefully to "now" rather than crashing.
+  const departureTime: Date = useMemo(() => {
+    if (params.departure != null) {
+      const parsed = new Date(params.departure);
+      if (!isNaN(parsed.getTime())) return parsed;
+    }
+    return new Date();
+  }, [params.departure]);
+
+  // The home screen always forwards valid coordinates; if they are missing we
+  // fall back to a neutral coordinate and hide the comparison UI instead of
+  // fabricating a route. This keeps the existing Coordinate type intact.
+  const fallbackCoordinate: Coordinate = { latitude: 12.9716, longitude: 77.6412 };
+  const hasValidJourney = initialOrigin != null && initialDest != null;
+
   // Dynamic origin & destination state (can be changed on compare screen)
-  const [origin, setOrigin] = useState<Coordinate>(initialOrigin);
-  const [destination, setDestination] = useState<Coordinate>(initialDest);
+  const [origin, setOrigin] = useState<Coordinate>(initialOrigin ?? fallbackCoordinate);
+  const [destination, setDestination] = useState<Coordinate>(initialDest ?? fallbackCoordinate);
   const [originName, setOriginName] = useState<string>(
     params.oname ? decodeURIComponent(params.oname) : 'Starting Point',
   );
@@ -113,7 +130,11 @@ export default function CompareScreen() {
   );
 
   const travelMode: TravelMode = (
-    params.mode === 'Cycling' ? 'cycling' : params.mode === 'Driving' ? 'driving' : 'walking'
+    params.mode?.toLowerCase() === 'cycling'
+      ? 'cycling'
+      : params.mode?.toLowerCase() === 'driving'
+      ? 'driving'
+      : 'walking'
   ) as TravelMode;
 
   // Search Modal state for compare screen
@@ -123,6 +144,7 @@ export default function CompareScreen() {
   // State
   const [routes, setRoutes] = useState<RouteOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [routeError, setRouteError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string>('');
   const [routePlaces, setRoutePlaces] = useState<Place[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -138,37 +160,47 @@ export default function CompareScreen() {
   const [isGuardianActive, setIsGuardianActive] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // Fetch routes whenever origin, destination or mode changes
+  // Fetch routes whenever origin, destination, mode or departure time changes.
+  // The selected departure time is forwarded so arrival-time scoring and the
+  // displayed ETA stay consistent with the home-screen journey.
   useEffect(() => {
+    if (!origin || !destination) {
+      setRoutes([]);
+      setSelectedId('');
+      setRouteError(null);
+      setIsLoading(false);
+      return;
+    }
+
     let isMounted = true;
     setIsLoading(true);
+    setRouteError(null);
 
     void getRouteOptions({
-      origin,
-      destination,
-      departureTime: new Date(),
+      origin: origin as Coordinate,
+      destination: destination as Coordinate,
+      departureTime,
       travelMode,
     })
       .then((fetched) => {
         if (!isMounted) return;
-        const finalRoutes = fetched && fetched.length > 0 ? fetched : MOCK_ROUTES;
-        setRoutes(finalRoutes);
-        if (finalRoutes.length > 0) {
-          setSelectedId(finalRoutes[0].id);
+        setRoutes(fetched as RouteOption[]);
+        if (fetched.length > 0) {
+          setSelectedId(fetched[0].id);
         }
         setIsLoading(false);
       })
       .catch(() => {
         if (!isMounted) return;
-        setRoutes(MOCK_ROUTES);
-        setSelectedId(MOCK_ROUTES[0].id);
+        setRoutes([] as RouteOption[]);
+        setRouteError('Routing unavailable. Please try again.');
         setIsLoading(false);
       });
 
     return () => {
       isMounted = false;
     };
-  }, [origin, destination, travelMode]);
+  }, [origin, destination, travelMode, departureTime]);
 
   const selectedRoute = routes.find((r) => r.id === selectedId) ?? routes[0] ?? null;
 
@@ -254,7 +286,28 @@ export default function CompareScreen() {
     return routePlaces.filter((p) => p.category === selectedCategory);
   }, [routePlaces, selectedCategory]);
 
-  const isUsingRealData = routes.length > 0 && !routes[0].isMock;
+  const isUsingRealData = routes.length > 0 && routes.every((r) => r.isMock === false);
+
+  // The recommended route is the highest-scoring one (the "Safer profile" when
+  // available, otherwise the best available candidate). It is highlighted on
+  // the map and selected by default so the user always sees a recommendation.
+  const recommendedRoute = useMemo(() => {
+    if (routes.length === 0) return null;
+    return [...routes].sort(
+      (a, b) => (b.nightActivityScore ?? 0) - (a.nightActivityScore ?? 0),
+    )[0];
+  }, [routes]);
+
+  // When fewer than 3 distinct routes are available, keep the existing 3-slot
+  // layout by filling the remaining slots with the recommended route again
+  // (visually disabled) instead of showing a confusing 1- or 2-card layout.
+  const displayRoutes = useMemo(() => {
+    if (routes.length === 0) return [] as RouteOption[];
+    if (routes.length >= 3) return routes.slice(0, 3);
+    const filled: RouteOption[] = [...routes];
+    while (filled.length < 3) filled.push(recommendedRoute!);
+    return filled;
+  }, [routes, recommendedRoute]);
 
   // Nearest help place ahead (for active navigation banner)
   const assistanceAhead = useMemo(() => {
@@ -265,6 +318,7 @@ export default function CompareScreen() {
     );
   }, [routePlaces]);
 
+  
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <StatusBar style="light" />
@@ -287,7 +341,7 @@ export default function CompareScreen() {
           <Text style={styles.headerSubtitle} numberOfLines={1}>
             {isNavigating
               ? `Following ${selectedRoute?.label || 'Route'} · Active Guidance`
-              : `${travelMode.toUpperCase()} · 3 Alternatives Evaluated`}
+              : `${travelMode.toUpperCase()} · ${routes.length} route${routes.length !== 1 ? 's' : ''} evaluated`}
           </Text>
         </View>
 
@@ -561,15 +615,36 @@ export default function CompareScreen() {
           </View>
 
           {/* 3 Route Cards (Figma Frame 2:8317) */}
+          {routes.length > 0 && routes.length < 3 && (
+            <View style={styles.partialRoutesNote}>
+              <Text style={styles.partialRoutesNoteText}>
+                ℹ️ Only {routes.length} route{routes.length !== 1 ? 's' : ''} could be found for this journey —
+                the remaining slot{routes.length === 1 ? 's are' : ' are'} shown as unavailable.
+                {'\n'}Recommendation is based on the highest Night Activity Score among the available routes.
+              </Text>
+            </View>
+          )}
           <View style={styles.routesCardsContainer}>
             {isLoading ? (
               <RouteComparisonSkeletonGroup />
+            ) : routeError ? (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyIcon}>⚠️</Text>
+                <Text style={styles.emptyTitle}>Routing unavailable</Text>
+                <Text style={styles.emptySubtitle}>{routeError}</Text>
+                <Pressable
+                  style={styles.backHomeBtn}
+                  onPress={() => router.back()}
+                >
+                  <Text style={styles.backHomeBtnText}>← Choose Locations</Text>
+                </Pressable>
+              </View>
             ) : routes.length === 0 ? (
               <View style={styles.emptyContainer}>
                 <Text style={styles.emptyIcon}>🗺️</Text>
                 <Text style={styles.emptyTitle}>No routes available</Text>
                 <Text style={styles.emptySubtitle}>
-                  Please choose a start location and destination on the Home screen to compare nighttime safe routes.
+                  No night routes could be found for this journey right now.
                 </Text>
                 <Pressable
                   style={styles.backHomeBtn}
@@ -579,15 +654,18 @@ export default function CompareScreen() {
                 </Pressable>
               </View>
             ) : (
-              routes.map((route) => {
+              displayRoutes.map((route, slotIndex) => {
                 const isSelected = route.id === selectedId;
+                const isDuplicateSlot =
+                  routes.length < 3 && slotIndex >= routes.length;
                 const profileColor = ROUTE_COLORS_BY_PROFILE[route.profileType] || '#ff8a00';
 
                 return (
                   <Pressable
-                    key={route.id}
+                    key={`${route.id}-${slotIndex}`}
                     style={[
                       styles.routeCard,
+                      isDuplicateSlot && styles.routeCardUnavailable,
                       isSelected && {
                         borderColor: profileColor,
                         backgroundColor:
@@ -606,26 +684,34 @@ export default function CompareScreen() {
                           <View
                             style={[
                               styles.radioIndicator,
-                              isSelected && { backgroundColor: profileColor },
+                              (isSelected || isDuplicateSlot) && { backgroundColor: profileColor },
                             ]}
                           />
                           <Text
                             style={[
                               styles.routeProfileTitle,
-                              isSelected && { color: profileColor },
+                              (isSelected || isDuplicateSlot) && { color: profileColor },
                             ]}
                           >
-                            {route.label}
+                            {isDuplicateSlot ? 'Not available' : route.label}{!isDuplicateSlot && route.id === recommendedRoute?.id ? ' ★' : ''}
                           </Text>
-                          {route.extraMinutes > 0 && (
+                          {!isDuplicateSlot && route.id === recommendedRoute?.id && (
+                            <View style={styles.recommendedBadge}>
+                              <Text style={styles.recommendedBadgeText}>★ Recommended</Text>
+                            </View>
+                          )}
+                          {!isDuplicateSlot && route.extraMinutes > 0 && (
                             <Text style={styles.routeTradeoff}>+{route.extraMinutes} min</Text>
                           )}
                         </View>
                         <Text style={styles.routeDurationText}>
-                          {route.durationMinutes} min{' '}
-                          <Text style={styles.routeDistanceText}>
-                            · {(route.distanceMeters / 1000).toFixed(1)} km
-                          </Text>
+                          {isDuplicateSlot ? '—' : `${route.durationMinutes} min`}
+                          {!isDuplicateSlot && (
+                            <Text style={styles.routeDistanceText}>
+                              {' '}
+                              · {(route.distanceMeters / 1000).toFixed(1)} km
+                            </Text>
+                          )}
                         </Text>
                       </View>
 
@@ -634,19 +720,27 @@ export default function CompareScreen() {
                         <Text
                           style={[
                             styles.scoreBigNumber,
-                            isSelected && { color: profileColor },
+                            (isSelected || isDuplicateSlot) && { color: profileColor },
                           ]}
                         >
-                          {route.nightActivityScore}
-                          <Text style={styles.scoreDenominator}>/100</Text>
+                          {isDuplicateSlot ? '—' : route.nightActivityScore}
+                          {!isDuplicateSlot && <Text style={styles.scoreDenominator}>/100</Text>}
                         </Text>
-                        <Text style={styles.scoreSubLabel}>Night activity</Text>
+                        <Text style={styles.scoreSubLabel}>
+                          {isDuplicateSlot ? 'No route' : 'Night activity'}
+                        </Text>
                       </View>
                     </View>
 
                     {/* Specific profile badges */}
                     <View style={styles.badgePillRow}>
-                      {route.profileType === 'safest' && (
+                      {isDuplicateSlot ? (
+                        <View style={styles.featurePill}>
+                          <Text style={styles.featurePillText}>
+                            Only {routes.length} route{routes.length !== 1 ? 's' : ''} found
+                          </Text>
+                        </View>
+                      ) : route.profileType === 'safest' ? (
                         <>
                           <View style={styles.featurePill}>
                             <Text style={styles.featurePillText}>🏪 {route.placesOpenNearRoute} open POIs</Text>
@@ -655,8 +749,7 @@ export default function CompareScreen() {
                             <Text style={styles.featurePillText}>🛡️ {route.longestQuietStretchMeters}m max gap</Text>
                           </View>
                         </>
-                      )}
-                      {route.profileType === 'balanced' && (
+                      ) : route.profileType === 'balanced' ? (
                         <>
                           <View style={styles.featurePill}>
                             <Text style={styles.featurePillText}>🛣️ {route.mainRoadPercentage}% main road</Text>
@@ -665,8 +758,7 @@ export default function CompareScreen() {
                             <Text style={styles.featurePillText}>⏱️ Balanced detour</Text>
                           </View>
                         </>
-                      )}
-                      {route.profileType === 'fastest' && (
+                      ) : (
                         <>
                           <View style={[styles.featurePill, styles.featurePillWarning]}>
                             <Text style={[styles.featurePillText, { color: '#f87171' }]}>
@@ -681,14 +773,17 @@ export default function CompareScreen() {
                     <Text
                       style={[
                         styles.routeEvidenceText,
-                        route.profileType === 'fastest' && styles.fastestEvidenceText,
+                        isDuplicateSlot && styles.unavailableEvidenceText,
+                        route.profileType === 'fastest' && !isDuplicateSlot && styles.fastestEvidenceText,
                       ]}
                     >
-                      {route.routeEvidence}
+                      {isDuplicateSlot
+                        ? 'No alternative route available for this journey.'
+                        : route.routeEvidence}
                     </Text>
 
                     {/* Describe Route & Watch Over Me Buttons on Selected Profile Card */}
-                    {isSelected && (
+                    {isSelected && !isDuplicateSlot && (
                       <>
                         <Pressable
                           style={[
@@ -814,7 +909,7 @@ export default function CompareScreen() {
             </View>
             <View style={{ alignItems: 'flex-end' }}>
               <Text style={styles.navArriveTime}>
-                Arrive ~{formatArrival(selectedRoute.durationMinutes)}
+                Arrive ~{formatArrival(selectedRoute.durationMinutes, departureTime)}
               </Text>
               <Text style={styles.navScoreTag}>
                 {selectedRoute.label} · {selectedRoute.nightActivityScore}/100
@@ -982,8 +1077,9 @@ export default function CompareScreen() {
   );
 }
 
-function formatArrival(mins: number): string {
-  const d = new Date(Date.now() + mins * 60 * 1000);
+function formatArrival(mins: number, departureTime?: Date): string {
+  const base = departureTime ?? new Date();
+  const d = new Date(base.getTime() + mins * 60 * 1000);
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
@@ -1331,6 +1427,16 @@ const styles = StyleSheet.create({
     borderColor: '#2b3139',
     padding: 12,
   },
+  routeCardUnavailable: {
+    backgroundColor: '#0a0d10',
+    borderColor: '#1a1f26',
+    borderStyle: 'dashed',
+    opacity: 0.6,
+  },
+  unavailableEvidenceText: {
+    color: '#55606d',
+    fontStyle: 'italic',
+  },
   routeCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1415,6 +1521,34 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#b0b7c0',
     fontWeight: '600',
+  },
+  partialRoutesNote: {
+    backgroundColor: 'rgba(56, 189, 248, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 10,
+  },
+  partialRoutesNoteText: {
+    fontSize: 10.5,
+    color: '#7dd3fc',
+    lineHeight: 15,
+  },
+  recommendedBadge: {
+    backgroundColor: 'rgba(74, 222, 128, 0.14)',
+    borderWidth: 1,
+    borderColor: '#4ADE80',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  recommendedBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#4ADE80',
+    letterSpacing: 0.3,
   },
   routeEvidenceText: {
     fontSize: 11,

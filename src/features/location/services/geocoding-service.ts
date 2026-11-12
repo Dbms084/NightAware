@@ -84,7 +84,9 @@ async function searchOsmPhoton(query: string, near?: Coordinate): Promise<PlaceS
           : undefined;
 
       return {
-        id: coordinate ? `photon-${coordinate.latitude},${coordinate.longitude}` : `photon-idx-${idx}`,
+        id: coordinate
+          ? `photon-${coordinate.latitude},${coordinate.longitude}-${p.osm_type || 'x'}-${p.osm_id || '0'}-${idx}`
+          : `photon-idx-${idx}`,
         name,
         secondaryText,
         fullAddress,

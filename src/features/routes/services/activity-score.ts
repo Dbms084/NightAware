@@ -285,16 +285,24 @@ export function calculateNightActivityScore(
       ['police', 'hospital', 'pharmacy', 'help_point'].includes(p.category),
     );
 
-    // Segment score (0–100)
-    let segScore = 20; // baseline
-    segScore += Math.min(45, nearbyOpen.length * 15);
-    segScore += Math.min(25, nearbyHelp.length * 15);
-
-    // Bonus if near streetlights / CCTV
-    const hasLighting = corridorPlaces.some(
-      (p) => p.category === 'streetlight' && distanceMeters(p.coordinate, midCoord) <= 160,
+    // Nearby verified street lighting and CCTV for this segment
+    const nearbyLighting = corridorPlaces.filter(
+      (p) =>
+        p.category === 'streetlight' &&
+        p.openAtJourneyTime !== false && // exclude known-dim zones
+        distanceMeters(p.coordinate, midCoord) <= 160,
     );
-    if (hasLighting) segScore += 10;
+    const nearbyCctv = corridorPlaces.filter(
+      (p) => p.category === 'cctv' && distanceMeters(p.coordinate, midCoord) <= 160,
+    );
+
+    // Segment score (0–100) — evidence-based, not a blanket baseline
+    let segScore = 0;
+    segScore += Math.min(45, nearbyOpen.length * 15); // open establishments nearby
+    segScore += Math.min(25, nearbyHelp.length * 15); // open help points nearby
+    segScore += nearbyLighting.length > 0 ? 15 : 0; // verified lit zone
+    segScore += nearbyCctv.length > 0 ? 10 : 0; // CCTV coverage
+    segScore += nearbyOpen.length > 0 ? 5 : 0; // any activity at all
 
     segScore = Math.min(100, Math.max(10, Math.round(segScore)));
 
@@ -402,10 +410,33 @@ export function calculateNightActivityScore(
   const activityContinuityScore = continuityScore;
 
   // 8. Parameter 5: Main-Road Accessibility (Max 10)
-  // Prefer well-established roads over interior alley shortcuts
-  // We estimate based on average spacing and street classification indicators
+  // Prefer well-established roads over interior alley shortcuts.
+  // Evidence proxy: verified lit zones + CCTV along the route are concentrated
+  // on established thoroughfares, so their segment coverage estimates the
+  // percentage of the route on lit, monitored main roads.
+  const litSegments = heatmapSegments.filter(
+    (s) =>
+      corridorPlaces.some(
+        (p) =>
+          p.category === 'streetlight' &&
+          p.openAtJourneyTime !== false &&
+          distanceMeters(p.coordinate, s.coordinates[Math.floor(s.coordinates.length / 2)]) <= 160,
+      ),
+  );
+  const cctvSegments = heatmapSegments.filter(
+    (s) =>
+      corridorPlaces.some(
+        (p) =>
+          p.category === 'cctv' &&
+          distanceMeters(p.coordinate, s.coordinates[Math.floor(s.coordinates.length / 2)]) <= 160,
+      ),
+  );
+  const monitoredSegmentRatio = Math.max(
+    litSegments.length / Math.max(1, heatmapSegments.length),
+    cctvSegments.length / Math.max(1, heatmapSegments.length),
+  );
   const mainRoadPercentage = Math.round(
-    Math.min(95, Math.max(30, distributionRatio * 100)),
+    Math.min(95, Math.max(25, monitoredSegmentRatio * 100)),
   );
   const mainRoadScore = Math.round(
     Math.min(
@@ -428,10 +459,28 @@ export function calculateNightActivityScore(
   );
 
   // 10. Parameter 7: Street Lighting (Max 10)
-  const streetlightZones = corridorPlaces.filter((p) => p.category === 'streetlight');
-  const lightingCoveragePercentage = Math.min(
-    95,
-    Math.max(40, (streetlightZones.length > 0 ? 85 : 55) * distributionRatio),
+  // Percentage of route segments with a verified lit zone within 160 m.
+  // Only zones confirmed lit at journey time count; known-dim zones do not.
+  const streetlightZones = corridorPlaces.filter(
+    (p) => p.category === 'streetlight' && p.openAtJourneyTime !== false,
+  );
+  const litSegmentCount = heatmapSegments.filter((s) =>
+    streetlightZones.some(
+      (p) =>
+        distanceMeters(
+          p.coordinate,
+          s.coordinates[Math.floor(s.coordinates.length / 2)],
+        ) <= 160,
+    ),
+  ).length;
+  const lightingCoveragePercentage = Math.round(
+    Math.min(
+      95,
+      Math.max(
+        0,
+        (litSegmentCount / Math.max(1, heatmapSegments.length)) * 100,
+      ),
+    ),
   );
   const streetLightingScore = Math.round(
     Math.min(
@@ -441,15 +490,44 @@ export function calculateNightActivityScore(
   );
 
   // 11. Parameter 8: CCTV Coverage (Max 5)
+  // Percentage of route segments with CCTV within 160 m.
   const cctvNodes = corridorPlaces.filter((p) => p.category === 'cctv');
+  const cctvSegmentCount = heatmapSegments.filter((s) =>
+    cctvNodes.some(
+      (p) =>
+        distanceMeters(
+          p.coordinate,
+          s.coordinates[Math.floor(s.coordinates.length / 2)],
+        ) <= 160,
+    ),
+  ).length;
+  const cctvCoveragePercentage = Math.round(
+    (cctvSegmentCount / Math.max(1, heatmapSegments.length)) * 100,
+  );
   const cctvScore = Math.round(
-    Math.min(weights.cctvCoverage, cctvNodes.length > 0 ? 5 : 2),
+    Math.min(weights.cctvCoverage, (cctvCoveragePercentage / 100) * weights.cctvCoverage),
   );
 
   // 12. Parameter 9: Public Transport (Max 5)
+  // Percentage of route segments with transit access within 200 m.
   const transitPlaces = openCorridorPlaces.filter((p) => p.category === 'transport');
+  const transitSegmentCount = heatmapSegments.filter((s) =>
+    transitPlaces.some(
+      (p) =>
+        distanceMeters(
+          p.coordinate,
+          s.coordinates[Math.floor(s.coordinates.length / 2)],
+        ) <= 200,
+    ),
+  ).length;
+  const transitCoveragePercentage = Math.round(
+    (transitSegmentCount / Math.max(1, heatmapSegments.length)) * 100,
+  );
   const publicTransportScore = Math.round(
-    Math.min(weights.publicTransport, transitPlaces.length > 0 ? 5 : 2),
+    Math.min(
+      weights.publicTransport,
+      (transitCoveragePercentage / 100) * weights.publicTransport,
+    ),
   );
 
   // Total Score
