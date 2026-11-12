@@ -113,14 +113,14 @@ async function searchOsmNominatim(query: string): Promise<PlaceSuggestion[]> {
     const data = await res.json();
     if (!Array.isArray(data)) return [];
 
-    return data.map((item: any) => {
+    return data.map((item: any, idx: number) => {
       const lat = parseFloat(item.lat);
       const lon = parseFloat(item.lon);
       const name = item.name || item.display_name.split(',')[0];
       const secondaryText = item.display_name.split(',').slice(1, 4).join(',').trim();
 
       return {
-        id: `nom-${lat},${lon}`,
+        id: `nom-${lat},${lon}-${item.place_id || item.osm_id || 'x'}-${idx}`,
         name,
         secondaryText,
         fullAddress: item.display_name,

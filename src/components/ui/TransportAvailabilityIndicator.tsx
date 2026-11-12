@@ -193,7 +193,7 @@ export function TransportAvailabilityIndicator({
                 </Text>
               </View>
             ) : (
-              displayedStops.map((stop) => {
+              displayedStops.map((stop, idx) => {
                 const isMetro = stop.subType === 'metro' || stop.type === 'metro';
                 const isTerminus = stop.subType === 'bus_terminus';
                 const typeLabel = isMetro ? 'METRO' : isTerminus ? 'TERMINUS' : 'BUS STOP';
@@ -201,7 +201,7 @@ export function TransportAvailabilityIndicator({
 
                 return (
                   <Pressable
-                    key={stop.id}
+                    key={`${stop.id}-${idx}`}
                     style={styles.stopCard}
                     onPress={() => onSelectStop?.(stop)}
                   >

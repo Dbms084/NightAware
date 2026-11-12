@@ -209,7 +209,7 @@ export function DestinationSearchModal({
           {showPopular ? (
             <FlatList
               data={POPULAR_DESTINATIONS}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(item, index) => (item.id ? `${item.id}-${index}` : String(index))}
               keyboardShouldPersistTaps="always"
               showsVerticalScrollIndicator={false}
               ListHeaderComponent={
@@ -249,7 +249,7 @@ export function DestinationSearchModal({
           ) : (
             <FlatList
               data={suggestions}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(item, index) => (item.id ? `${item.id}-${index}` : String(index))}
               keyboardShouldPersistTaps="always"
               showsVerticalScrollIndicator={false}
               ListEmptyComponent={

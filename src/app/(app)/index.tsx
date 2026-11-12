@@ -25,6 +25,7 @@ import Animated, {
 import { useLocation } from '@/features/location/hooks/useLocation';
 import { NightAwareMap, OriginMarker, DestinationMarker, PlaceMarker, RoutePolyline } from '@/components/map';
 import { LocationSearchModal, type SearchField } from '@/components/ui/LocationSearchModal';
+import { UserAccountModal } from '@/features/auth/components/UserAccountModal';
 import { getRouteOptions, clearRouteCache, ROUTE_COLORS_BY_PROFILE } from '@/features/routes/services/route-provider';
 import { getPlacesNearRoute } from '@/features/places/services/place-provider';
 import { RouteCardSkeleton } from '@/components/ui/Skeleton';
@@ -121,6 +122,7 @@ export default function HomeScreen() {
 
   // Search Modal state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [searchField, setSearchField] = useState<SearchField>('destination');
   const [customStartCoord, setCustomStartCoord] = useState<Coordinate | null>(null);
   const [customStartName, setCustomStartName] = useState<string | null>(null);
@@ -550,9 +552,7 @@ export default function HomeScreen() {
               accessibilityRole="button"
               accessibilityLabel="NightAware Account"
               className="min-h-12 min-w-12 items-center justify-center"
-              onPress={() =>
-                Alert.alert('NightAware', 'Women\'s Night Route Companion')
-              }
+              onPress={() => setIsAccountModalOpen(true)}
             >
               <Icon name="account" color="#aab2bb" size={32} />
             </Pressable>
@@ -873,6 +873,12 @@ export default function HomeScreen() {
         onClose={() => setIsSearchOpen(false)}
         onSelectStart={handleSelectStart}
         onSelectDestination={handleSelectDestination}
+      />
+
+      {/* User Account / Profile & Sign-Out Modal */}
+      <UserAccountModal
+        visible={isAccountModalOpen}
+        onClose={() => setIsAccountModalOpen(false)}
       />
 
       {/* Custom departure date & time picker modal */}

@@ -338,7 +338,7 @@ export function LocationSearchModal({
           ) : showPopular ? (
             <FlatList
               data={QUICK_SUGGESTIONS}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(item, index) => (item.id ? `${item.id}-${index}` : String(index))}
               keyboardShouldPersistTaps="always"
               showsVerticalScrollIndicator={false}
               ListHeaderComponent={
@@ -420,7 +420,7 @@ export function LocationSearchModal({
           ) : (
             <FlatList
               data={suggestions}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(item, index) => (item.id ? `${item.id}-${index}` : String(index))}
               keyboardShouldPersistTaps="always"
               showsVerticalScrollIndicator={false}
               ListHeaderComponent={

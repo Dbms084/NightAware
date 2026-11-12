@@ -416,7 +416,7 @@ export function RouteDetailSheet({
                   </Text>
                 </View>
               ) : (
-                filteredEstablishments.map((place) => {
+                filteredEstablishments.map((place, idx) => {
                   const icon = PLACE_CATEGORY_ICONS[place.category] || '📍';
                   const label = PLACE_CATEGORY_LABELS[place.category] || 'Place';
                   const color = PLACE_MARKER_COLORS[place.category] || '#64748b';
@@ -460,7 +460,7 @@ export function RouteDetailSheet({
 
                   return (
                     <View
-                      key={place.id}
+                      key={`${place.id}-${idx}`}
                       style={[
                         styles.placeCard,
                         isOpen
