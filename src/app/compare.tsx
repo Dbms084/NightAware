@@ -43,15 +43,26 @@ import { RouteDetailSheet } from '@/components/map/RouteDetailSheet';
 import { SafetyReportModal } from '@/components/ui/SafetyReportModal';
 import { RouteComparisonSkeletonGroup } from '@/components/ui/Skeleton';
 import { LocationSearchModal, type SearchField } from '@/components/ui/LocationSearchModal';
-import { DEMO_ORIGIN, DEMO_DESTINATION } from '@/data/mock-places';
-import { MOCK_ROUTES } from '@/data/mock-routes';
+import { NavigationSidebar } from '@/components/ui/NavigationSidebar';
+import {
+  WatchOverMeModal,
+  ManageContactsModal,
+  GuardianActiveBanner,
+  SafetyCheckInModal,
+} from '@/components/guardian';
+import { useGuardianContacts } from '@/features/guardian/hooks/useGuardianContacts';
+import { useGuardianTracker } from '@/features/guardian/hooks/useGuardianTracker';
 import { getPlacesNearRoute } from '@/features/places/services/place-provider';
 import { getRouteOptions, ROUTE_COLORS_BY_PROFILE } from '@/features/routes/services/route-provider';
+import { formatDuration, formatArrival } from '@/utils/format-time';
+import { TransportAvailabilityIndicator } from '@/components/ui/TransportAvailabilityIndicator';
+import { evaluateTransportAvailability } from '@/features/transit/services/transit-service';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 const CATEGORY_FILTERS = [
   { id: 'all', label: 'All POIs' },
+  { id: 'open_only', label: '🟢 Open Only' },
   { id: 'pharmacy', label: '💊 Pharmacies' },
   { id: 'hospital', label: '🏥 Hospitals' },
   { id: 'police', label: '👮 Police' },
@@ -69,32 +80,51 @@ export default function CompareScreen() {
     dlat?: string;
     dlng?: string;
     mode?: string;
+    departure?: string;
     oname?: string;
     dname?: string;
   }>();
 
-  // Parse initial coordinates
-  const initialOrigin: Coordinate = useMemo(() => {
+  // Parse initial coordinates. If the home screen did not forward valid
+  // coordinates we keep them null and show an empty state instead of falling
+  // back to synthetic demo coordinates.
+  const initialOrigin: Coordinate | null = useMemo(() => {
     if (params.olat != null && params.olng != null) {
       const lat = parseFloat(params.olat);
       const lng = parseFloat(params.olng);
       if (!isNaN(lat) && !isNaN(lng)) return { latitude: lat, longitude: lng };
     }
-    return DEMO_ORIGIN;
+    return null;
   }, [params.olat, params.olng]);
 
-  const initialDest: Coordinate = useMemo(() => {
+  const initialDest: Coordinate | null = useMemo(() => {
     if (params.dlat != null && params.dlng != null) {
       const lat = parseFloat(params.dlat);
       const lng = parseFloat(params.dlng);
       if (!isNaN(lat) && !isNaN(lng)) return { latitude: lat, longitude: lng };
     }
-    return DEMO_DESTINATION;
+    return null;
   }, [params.dlat, params.dlng]);
 
+  // Parse the departure time forwarded from the home screen. Invalid or
+  // missing values degrade gracefully to "now" rather than crashing.
+  const departureTime: Date = useMemo(() => {
+    if (params.departure != null) {
+      const parsed = new Date(params.departure);
+      if (!isNaN(parsed.getTime())) return parsed;
+    }
+    return new Date();
+  }, [params.departure]);
+
+  // The home screen always forwards valid coordinates; if they are missing we
+  // fall back to a neutral coordinate and hide the comparison UI instead of
+  // fabricating a route. This keeps the existing Coordinate type intact.
+  const fallbackCoordinate: Coordinate = { latitude: 12.9716, longitude: 77.6412 };
+  const hasValidJourney = initialOrigin != null && initialDest != null;
+
   // Dynamic origin & destination state (can be changed on compare screen)
-  const [origin, setOrigin] = useState<Coordinate>(initialOrigin);
-  const [destination, setDestination] = useState<Coordinate>(initialDest);
+  const [origin, setOrigin] = useState<Coordinate>(initialOrigin ?? fallbackCoordinate);
+  const [destination, setDestination] = useState<Coordinate>(initialDest ?? fallbackCoordinate);
   const [originName, setOriginName] = useState<string>(
     params.oname ? decodeURIComponent(params.oname) : 'Starting Point',
   );
@@ -103,7 +133,11 @@ export default function CompareScreen() {
   );
 
   const travelMode: TravelMode = (
-    params.mode === 'Cycling' ? 'cycling' : params.mode === 'Driving' ? 'driving' : 'walking'
+    params.mode?.toLowerCase() === 'cycling'
+      ? 'cycling'
+      : params.mode?.toLowerCase() === 'driving'
+      ? 'driving'
+      : 'walking'
   ) as TravelMode;
 
   // Search Modal state for compare screen
@@ -113,6 +147,7 @@ export default function CompareScreen() {
   // State
   const [routes, setRoutes] = useState<RouteOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [routeError, setRouteError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string>('');
   const [routePlaces, setRoutePlaces] = useState<Place[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -121,69 +156,119 @@ export default function CompareScreen() {
   const [isNavigating, setIsNavigating] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
 
-  // Fetch routes whenever origin, destination or mode changes
+  // Guardian & Watch Over Me state
+  const { contacts, primaryContact } = useGuardianContacts();
+  const [isWatchOverMeOpen, setIsWatchOverMeOpen] = useState(false);
+  const [isContactsModalOpen, setIsContactsModalOpen] = useState(false);
+  const [isGuardianActive, setIsGuardianActive] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // Fetch routes whenever origin, destination, mode or departure time changes.
+  // The selected departure time is forwarded so arrival-time scoring and the
+  // displayed ETA stay consistent with the home-screen journey.
   useEffect(() => {
+    if (!origin || !destination) {
+      setRoutes([]);
+      setSelectedId('');
+      setRouteError(null);
+      setIsLoading(false);
+      return;
+    }
+
     let isMounted = true;
     setIsLoading(true);
+    setRouteError(null);
 
     void getRouteOptions({
-      origin,
-      destination,
-      departureTime: new Date(),
+      origin: origin as Coordinate,
+      destination: destination as Coordinate,
+      departureTime,
       travelMode,
+      originName,
+      destinationName,
     })
       .then((fetched) => {
         if (!isMounted) return;
-        const finalRoutes = fetched && fetched.length > 0 ? fetched : MOCK_ROUTES;
-        setRoutes(finalRoutes);
-        if (finalRoutes.length > 0) {
-          setSelectedId(finalRoutes[0].id);
+        setRoutes(fetched as RouteOption[]);
+        if (fetched.length > 0) {
+          setSelectedId(fetched[0].id);
         }
         setIsLoading(false);
       })
       .catch(() => {
         if (!isMounted) return;
-        setRoutes(MOCK_ROUTES);
-        setSelectedId(MOCK_ROUTES[0].id);
+        setRoutes([] as RouteOption[]);
+        setRouteError('Routing unavailable. Please try again.');
         setIsLoading(false);
       });
 
     return () => {
       isMounted = false;
     };
-  }, [origin, destination, travelMode]);
+  }, [origin, destination, travelMode, departureTime]);
 
   const selectedRoute = routes.find((r) => r.id === selectedId) ?? routes[0] ?? null;
 
-  // Load places near the selected route
+  // Autonomous Guardian Watchdogs: Corridor Deviation, Stoppage & Battery
+  const {
+    currentCoord: guardianCurrentCoord,
+    deviationMeters,
+    isOffCorridor,
+    isArrived,
+    activeAlert,
+    stoppedDurationMinutes,
+    acknowledgeAlert,
+    simulateDeviation,
+    simulateStoppage,
+    simulateArrival,
+    simulateBatteryLow,
+  } = useGuardianTracker({
+    isGuardianActive: isNavigating && isGuardianActive,
+    route: selectedRoute,
+    destinationCoord: destination,
+    destinationName,
+    primaryContact,
+  });
+
+  // Active establishments along the selected route:
+  // Prefer dynamically fetched places, but immediately fall back to selectedRoute.establishments
+  // so the map, category filters, and detail sheet are NEVER empty while loading.
+  const activePlaces = useMemo(() => {
+    if (routePlaces && routePlaces.length > 0) return routePlaces;
+    if (selectedRoute?.establishments && selectedRoute.establishments.length > 0) {
+      return selectedRoute.establishments;
+    }
+    return [];
+  }, [routePlaces, selectedRoute]);
+
+  // Load places near the selected route, pre-seeding immediately with existing establishments
   useEffect(() => {
     if (!selectedRoute) {
       setRoutePlaces([]);
       return;
     }
+    // Pre-seed immediately with the route's already-calculated establishments
+    if (selectedRoute.establishments && selectedRoute.establishments.length > 0) {
+      setRoutePlaces(selectedRoute.establishments);
+    }
     let isMounted = true;
-    void getPlacesNearRoute(selectedRoute.coordinates, 320).then((places) => {
-      if (isMounted) {
+    void getPlacesNearRoute(selectedRoute.coordinates, 320, originName, destinationName).then((places) => {
+      if (isMounted && places && places.length > 0) {
         setRoutePlaces(places);
       }
     });
     return () => {
       isMounted = false;
     };
-  }, [selectedRoute]);
+  }, [selectedRoute?.id, originName, destinationName]);
 
   const handleSelectRoute = useCallback((id: string) => {
     setSelectedId(id);
   }, []);
 
-  const handleShareJourney = async () => {
-    if (!selectedRoute) return;
-    try {
-      await Share.share({
-        message: `I'm following the NightAware ${selectedRoute.label} (${selectedRoute.durationMinutes} min, Night Activity Score: ${selectedRoute.nightActivityScore}/100) towards ${destination.latitude.toFixed(4)}, ${destination.longitude.toFixed(4)}.`,
-      });
-    } catch {}
-  };
+  const handleShareJourney = useCallback(() => {
+    setIsWatchOverMeOpen(true);
+  }, []);
 
   // Map framing region: centers around mid-point of journey
   const mapRegion = useMemo(() => {
@@ -208,21 +293,63 @@ export default function CompareScreen() {
 
   // Filtered establishments on map by active category filter
   const filteredPlaces = useMemo(() => {
-    if (selectedCategory === 'all') return routePlaces;
-    return routePlaces.filter((p) => p.category === selectedCategory);
-  }, [routePlaces, selectedCategory]);
+    if (selectedCategory === 'all') return activePlaces;
+    if (selectedCategory === 'open_only') {
+      return activePlaces.filter(
+        (p) =>
+          p.is24_7 ||
+          p.arrivalStatus === 'open_at_arrival' ||
+          p.arrivalStatus === 'closing_soon' ||
+          p.openAtJourneyTime === true,
+      );
+    }
+    return activePlaces.filter((p) => p.category === selectedCategory);
+  }, [activePlaces, selectedCategory]);
 
-  const isUsingRealData = routes.length > 0 && !routes[0].isMock;
+  const isUsingRealData = routes.length > 0 && routes.every((r) => r.isMock === false);
+
+  // The recommended route is the highest-scoring one (the "Safer profile" when
+  // available, otherwise the best available candidate). It is highlighted on
+  // the map and selected by default so the user always sees a recommendation.
+  const recommendedRoute = useMemo(() => {
+    if (routes.length === 0) return null;
+    return [...routes].sort(
+      (a, b) => (b.nightActivityScore ?? 0) - (a.nightActivityScore ?? 0),
+    )[0];
+  }, [routes]);
+
+  // When fewer than 3 distinct routes are available, keep the existing 3-slot
+  // layout by filling the remaining slots with the recommended route again
+  // (visually disabled) instead of showing a confusing 1- or 2-card layout.
+  const displayRoutes = useMemo(() => {
+    if (routes.length === 0) return [] as RouteOption[];
+    if (routes.length >= 3) return routes.slice(0, 3);
+    const filled: RouteOption[] = [...routes];
+    while (filled.length < 3) filled.push(recommendedRoute!);
+    return filled;
+  }, [routes, recommendedRoute]);
 
   // Nearest help place ahead (for active navigation banner)
   const assistanceAhead = useMemo(() => {
-    return routePlaces.find(
+    return activePlaces.find(
       (p) =>
         ['pharmacy', 'hospital', 'police', 'petrol_station'].includes(p.category) &&
         (p.openAtJourneyTime === true || p.is24_7 === true),
     );
-  }, [routePlaces]);
+  }, [activePlaces]);
 
+  // Transport availability summary for the selected night route
+  const transportSummary = useMemo(() => {
+    return evaluateTransportAvailability(
+      activePlaces,
+      departureTime,
+      selectedRoute?.coordinates,
+      originName,
+      destinationName,
+    );
+  }, [activePlaces, departureTime, selectedRoute?.coordinates, originName, destinationName]);
+
+  
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <StatusBar style="light" />
@@ -245,28 +372,47 @@ export default function CompareScreen() {
           <Text style={styles.headerSubtitle} numberOfLines={1}>
             {isNavigating
               ? `Following ${selectedRoute?.label || 'Route'} · Active Guidance`
-              : `${travelMode.toUpperCase()} · 3 Alternatives Evaluated`}
+              : `${travelMode.toUpperCase()} · ${routes.length} route${routes.length !== 1 ? 's' : ''} evaluated`}
           </Text>
         </View>
 
-        {/* Heatmap toggle / End navigation button */}
-        {isNavigating ? (
+        {/* Top Right Controls: End/Heatmap + ☰ Sidebar Menu Button */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          {isNavigating ? (
+            <Pressable
+              style={styles.endNavButton}
+              onPress={() => {
+                setIsNavigating(false);
+                setIsGuardianActive(false);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="End journey navigation"
+            >
+              <Text style={styles.endNavText}>End</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              style={[styles.heatmapToggle, showHeatmap && styles.heatmapToggleActive]}
+              onPress={() => setShowHeatmap(!showHeatmap)}
+              accessibilityRole="button"
+              accessibilityLabel="Toggle road activity heatmap"
+            >
+              <Text style={[styles.heatmapToggleText, showHeatmap && styles.heatmapToggleTextActive]}>
+                {showHeatmap ? 'Heatmap ON' : 'Heatmap'}
+              </Text>
+            </Pressable>
+          )}
+
+          {/* ☰ Sidebar Drawer Menu Button */}
           <Pressable
-            style={styles.endNavButton}
-            onPress={() => setIsNavigating(false)}
+            style={styles.menuIconBtn}
+            onPress={() => setIsSidebarOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Open side settings menu"
           >
-            <Text style={styles.endNavText}>End</Text>
+            <Text style={styles.menuIconBtnText}>☰</Text>
           </Pressable>
-        ) : (
-          <Pressable
-            style={[styles.heatmapToggle, showHeatmap && styles.heatmapToggleActive]}
-            onPress={() => setShowHeatmap(!showHeatmap)}
-          >
-            <Text style={[styles.heatmapToggleText, showHeatmap && styles.heatmapToggleTextActive]}>
-              {showHeatmap ? 'Heatmap ON' : 'Heatmap'}
-            </Text>
-          </Pressable>
-        )}
+        </View>
       </View>
 
       {/* SUB-HEADER: DATA STATUS */}
@@ -280,6 +426,21 @@ export default function CompareScreen() {
             : 'DEMO JOURNEY · Mapped nighttime activity indicators'}
         </Text>
       </View>
+
+      {/* ACTIVE GUARDIAN BANNER */}
+      {isNavigating && isGuardianActive && (
+        <GuardianActiveBanner
+          destinationName={destinationName}
+          primaryContact={primaryContact}
+          deviationMeters={deviationMeters}
+          isOffCorridor={isOffCorridor}
+          isArrived={isArrived}
+          onEndJourney={() => {
+            setIsNavigating(false);
+            setIsGuardianActive(false);
+          }}
+        />
+      )}
 
       {/* CORRIDOR BAR: START -> DESTINATION with EDIT BUTTON */}
       {!isNavigating && (
@@ -440,9 +601,18 @@ export default function CompareScreen() {
           >
             {CATEGORY_FILTERS.map((f) => {
               const isActive = selectedCategory === f.id;
-              const count = f.id === 'all'
-                ? routePlaces.length
-                : routePlaces.filter((p) => p.category === f.id).length;
+              const count =
+                f.id === 'all'
+                  ? activePlaces.length
+                  : f.id === 'open_only'
+                  ? activePlaces.filter(
+                      (p) =>
+                        p.is24_7 ||
+                        p.arrivalStatus === 'open_at_arrival' ||
+                        p.arrivalStatus === 'closing_soon' ||
+                        p.openAtJourneyTime === true,
+                    ).length
+                  : activePlaces.filter((p) => p.category === f.id).length;
 
               return (
                 <Pressable
@@ -471,20 +641,41 @@ export default function CompareScreen() {
           <View style={styles.arrivalContextRow}>
             <Text style={styles.contextLeave}>Leave now</Text>
             <Text style={styles.contextArrive}>
-              {selectedRoute ? `Arrive in ~${selectedRoute.durationMinutes} min` : 'Evaluating routes...'}
+              {selectedRoute ? `Arrive in ~${formatDuration(selectedRoute.durationMinutes)}` : 'Evaluating routes...'}
             </Text>
           </View>
 
           {/* 3 Route Cards (Figma Frame 2:8317) */}
+          {routes.length > 0 && routes.length < 3 && (
+            <View style={styles.partialRoutesNote}>
+              <Text style={styles.partialRoutesNoteText}>
+                ℹ️ Only {routes.length} route{routes.length !== 1 ? 's' : ''} could be found for this journey —
+                the remaining slot{routes.length === 1 ? 's are' : ' are'} shown as unavailable.
+                {'\n'}Recommendation is based on the highest Night Activity Score among the available routes.
+              </Text>
+            </View>
+          )}
           <View style={styles.routesCardsContainer}>
             {isLoading ? (
               <RouteComparisonSkeletonGroup />
+            ) : routeError ? (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyIcon}>⚠️</Text>
+                <Text style={styles.emptyTitle}>Routing unavailable</Text>
+                <Text style={styles.emptySubtitle}>{routeError}</Text>
+                <Pressable
+                  style={styles.backHomeBtn}
+                  onPress={() => router.back()}
+                >
+                  <Text style={styles.backHomeBtnText}>← Choose Locations</Text>
+                </Pressable>
+              </View>
             ) : routes.length === 0 ? (
               <View style={styles.emptyContainer}>
                 <Text style={styles.emptyIcon}>🗺️</Text>
                 <Text style={styles.emptyTitle}>No routes available</Text>
                 <Text style={styles.emptySubtitle}>
-                  Please choose a start location and destination on the Home screen to compare nighttime safe routes.
+                  No night routes could be found for this journey right now.
                 </Text>
                 <Pressable
                   style={styles.backHomeBtn}
@@ -494,15 +685,18 @@ export default function CompareScreen() {
                 </Pressable>
               </View>
             ) : (
-              routes.map((route) => {
+              displayRoutes.map((route, slotIndex) => {
                 const isSelected = route.id === selectedId;
+                const isDuplicateSlot =
+                  routes.length < 3 && slotIndex >= routes.length;
                 const profileColor = ROUTE_COLORS_BY_PROFILE[route.profileType] || '#ff8a00';
 
                 return (
                   <Pressable
-                    key={route.id}
+                    key={`${route.id}-${slotIndex}`}
                     style={[
                       styles.routeCard,
+                      isDuplicateSlot && styles.routeCardUnavailable,
                       isSelected && {
                         borderColor: profileColor,
                         backgroundColor:
@@ -521,26 +715,34 @@ export default function CompareScreen() {
                           <View
                             style={[
                               styles.radioIndicator,
-                              isSelected && { backgroundColor: profileColor },
+                              (isSelected || isDuplicateSlot) && { backgroundColor: profileColor },
                             ]}
                           />
                           <Text
                             style={[
                               styles.routeProfileTitle,
-                              isSelected && { color: profileColor },
+                              (isSelected || isDuplicateSlot) && { color: profileColor },
                             ]}
                           >
-                            {route.label}
+                            {isDuplicateSlot ? 'Not available' : route.label}{!isDuplicateSlot && route.id === recommendedRoute?.id ? ' ★' : ''}
                           </Text>
-                          {route.extraMinutes > 0 && (
-                            <Text style={styles.routeTradeoff}>+{route.extraMinutes} min</Text>
+                          {!isDuplicateSlot && route.id === recommendedRoute?.id && (
+                            <View style={styles.recommendedBadge}>
+                              <Text style={styles.recommendedBadgeText}>★ Recommended</Text>
+                            </View>
+                          )}
+                          {!isDuplicateSlot && route.extraMinutes > 0 && (
+                            <Text style={styles.routeTradeoff}>+{formatDuration(route.extraMinutes)}</Text>
                           )}
                         </View>
                         <Text style={styles.routeDurationText}>
-                          {route.durationMinutes} min{' '}
-                          <Text style={styles.routeDistanceText}>
-                            · {(route.distanceMeters / 1000).toFixed(1)} km
-                          </Text>
+                          {isDuplicateSlot ? '—' : formatDuration(route.durationMinutes)}
+                          {!isDuplicateSlot && (
+                            <Text style={styles.routeDistanceText}>
+                              {' '}
+                              · {(route.distanceMeters / 1000).toFixed(1)} km
+                            </Text>
+                          )}
                         </Text>
                       </View>
 
@@ -549,19 +751,27 @@ export default function CompareScreen() {
                         <Text
                           style={[
                             styles.scoreBigNumber,
-                            isSelected && { color: profileColor },
+                            (isSelected || isDuplicateSlot) && { color: profileColor },
                           ]}
                         >
-                          {route.nightActivityScore}
-                          <Text style={styles.scoreDenominator}>/100</Text>
+                          {isDuplicateSlot ? '—' : route.nightActivityScore}
+                          {!isDuplicateSlot && <Text style={styles.scoreDenominator}>/100</Text>}
                         </Text>
-                        <Text style={styles.scoreSubLabel}>Night activity</Text>
+                        <Text style={styles.scoreSubLabel}>
+                          {isDuplicateSlot ? 'No route' : 'Night activity'}
+                        </Text>
                       </View>
                     </View>
 
                     {/* Specific profile badges */}
                     <View style={styles.badgePillRow}>
-                      {route.profileType === 'safest' && (
+                      {isDuplicateSlot ? (
+                        <View style={styles.featurePill}>
+                          <Text style={styles.featurePillText}>
+                            Only {routes.length} route{routes.length !== 1 ? 's' : ''} found
+                          </Text>
+                        </View>
+                      ) : route.profileType === 'safest' ? (
                         <>
                           <View style={styles.featurePill}>
                             <Text style={styles.featurePillText}>🏪 {route.placesOpenNearRoute} open POIs</Text>
@@ -569,9 +779,13 @@ export default function CompareScreen() {
                           <View style={styles.featurePill}>
                             <Text style={styles.featurePillText}>🛡️ {route.longestQuietStretchMeters}m max gap</Text>
                           </View>
+                          {route.publicTransportCount > 0 && (
+                            <View style={styles.featurePill}>
+                              <Text style={styles.featurePillText}>🚇 {route.publicTransportCount} transit</Text>
+                            </View>
+                          )}
                         </>
-                      )}
-                      {route.profileType === 'balanced' && (
+                      ) : route.profileType === 'balanced' ? (
                         <>
                           <View style={styles.featurePill}>
                             <Text style={styles.featurePillText}>🛣️ {route.mainRoadPercentage}% main road</Text>
@@ -579,15 +793,24 @@ export default function CompareScreen() {
                           <View style={styles.featurePill}>
                             <Text style={styles.featurePillText}>⏱️ Balanced detour</Text>
                           </View>
+                          {route.publicTransportCount > 0 && (
+                            <View style={styles.featurePill}>
+                              <Text style={styles.featurePillText}>🚇 {route.publicTransportCount} transit</Text>
+                            </View>
+                          )}
                         </>
-                      )}
-                      {route.profileType === 'fastest' && (
+                      ) : (
                         <>
                           <View style={[styles.featurePill, styles.featurePillWarning]}>
                             <Text style={[styles.featurePillText, { color: '#f87171' }]}>
                               ⚠️ {route.longestQuietStretchMeters}m quiet stretch
                             </Text>
                           </View>
+                          {route.publicTransportCount > 0 && (
+                            <View style={styles.featurePill}>
+                              <Text style={styles.featurePillText}>🚇 {route.publicTransportCount} transit</Text>
+                            </View>
+                          )}
                         </>
                       )}
                     </View>
@@ -596,18 +819,92 @@ export default function CompareScreen() {
                     <Text
                       style={[
                         styles.routeEvidenceText,
-                        route.profileType === 'fastest' && styles.fastestEvidenceText,
+                        isDuplicateSlot && styles.unavailableEvidenceText,
+                        route.profileType === 'fastest' && !isDuplicateSlot && styles.fastestEvidenceText,
                       ]}
                     >
-                      {route.routeEvidence}
+                      {isDuplicateSlot
+                        ? 'No alternative route available for this journey.'
+                        : route.routeEvidence}
                     </Text>
+
+                    {/* Describe Route & Watch Over Me Buttons on Selected Profile Card */}
+                    {isSelected && !isDuplicateSlot && (
+                      <>
+                        <Pressable
+                          style={[
+                            styles.describeRouteButton,
+                            {
+                              borderColor: profileColor,
+                              backgroundColor:
+                                route.profileType === 'safest'
+                                  ? 'rgba(255, 138, 0, 0.12)'
+                                  : route.profileType === 'balanced'
+                                  ? 'rgba(56, 189, 248, 0.12)'
+                                  : 'rgba(248, 113, 113, 0.12)',
+                            },
+                          ]}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            setShowDetail(true);
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Describe route and factors for ${route.label}`}
+                        >
+                          <View style={styles.describeRouteLeft}>
+                            <Text style={styles.describeRouteIcon}>📋</Text>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.describeRouteTitle, { color: profileColor }]}>
+                                Describe {route.label} Route
+                              </Text>
+                              <Text style={styles.describeRouteSubtitle}>
+                                View all {activePlaces.length} POIs & safety factors taken into account
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={[styles.describeRouteChevron, { color: profileColor }]}>›</Text>
+                        </Pressable>
+
+                        {/* Watch Over Me Action on Selected Card */}
+                        <Pressable
+                          style={styles.watchOverMeCardBtn}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            setIsWatchOverMeOpen(true);
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel="Watch Over Me Live Trip Sharing & Guardian"
+                        >
+                          <View style={styles.describeRouteLeft}>
+                            <Text style={styles.describeRouteIcon}>🛡️</Text>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.watchOverMeTitle}>
+                                Watch Over Me · Live Companion
+                              </Text>
+                              <Text style={styles.describeRouteSubtitle}>
+                                Share live ETA on WhatsApp/SMS & alert contacts ({contacts.length} saved)
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={styles.watchOverMeChevron}>›</Text>
+                        </Pressable>
+                      </>
+                    )}
                   </Pressable>
                 );
               })
             )}
           </View>
 
-          {/* "Why Score?" Explanation / Inspector Bar */}
+          {/* Transport Availability Indicator */}
+          {selectedRoute && !isLoading && !routeError && (
+            <TransportAvailabilityIndicator
+              summary={transportSummary}
+              onSelectStop={() => setShowDetail(true)}
+            />
+          )}
+
+          {/* "Describe Route & Breakdown" Bar */}
           {selectedRoute && (
             <Pressable
               style={styles.scoreExplanationBar}
@@ -617,12 +914,12 @@ export default function CompareScreen() {
               <View style={styles.explanationTextCol}>
                 <View style={styles.explanationHeadingRow}>
                   <Text style={styles.explanationTitle}>
-                    Why {selectedRoute.nightActivityScore}? Detailed breakdown & POIs
+                    Why Score {selectedRoute.nightActivityScore}? Full Analysis & Places
                   </Text>
                   <Text style={styles.chevronIcon}>›</Text>
                 </View>
                 <Text style={styles.explanationBody}>
-                  Tap to inspect the 9-parameter score breakdown, open establishments, and direct call buttons.
+                  Tap to view lighting %, quiet gaps, and all categorized POIs along this path.
                 </Text>
               </View>
             </Pressable>
@@ -658,7 +955,18 @@ export default function CompareScreen() {
           <View style={styles.navProgressHeader}>
             <View>
               <Text style={styles.navTimeRemaining}>
-                {selectedRoute.durationMinutes} <Text style={styles.navMinLabel}>min</Text>
+                {selectedRoute.durationMinutes < 60 ? (
+                  <>
+                    {selectedRoute.durationMinutes} <Text style={styles.navMinLabel}>min</Text>
+                  </>
+                ) : (
+                  <>
+                    {Math.floor(selectedRoute.durationMinutes / 60)} <Text style={styles.navMinLabel}>hr</Text>
+                    {selectedRoute.durationMinutes % 60 > 0 ? (
+                      <> {selectedRoute.durationMinutes % 60} <Text style={styles.navMinLabel}>min</Text></>
+                    ) : null}
+                  </>
+                )}
               </Text>
               <Text style={styles.navDistRemaining}>
                 {(selectedRoute.distanceMeters / 1000).toFixed(1)} km remaining
@@ -666,7 +974,7 @@ export default function CompareScreen() {
             </View>
             <View style={{ alignItems: 'flex-end' }}>
               <Text style={styles.navArriveTime}>
-                Arrive ~{formatArrival(selectedRoute.durationMinutes)}
+                Arrive ~{formatArrival(selectedRoute.durationMinutes, departureTime)}
               </Text>
               <Text style={styles.navScoreTag}>
                 {selectedRoute.label} · {selectedRoute.nightActivityScore}/100
@@ -732,12 +1040,15 @@ export default function CompareScreen() {
       {showDetail && selectedRoute && (
         <RouteDetailSheet
           route={selectedRoute}
-          places={routePlaces}
+          places={activePlaces}
           onClose={() => setShowDetail(false)}
           onStartNavigation={() => {
             setShowDetail(false);
             setIsNavigating(true);
           }}
+          departureTime={departureTime}
+          originName={originName}
+          destinationName={destinationName}
         />
       )}
 
@@ -761,21 +1072,81 @@ export default function CompareScreen() {
           if (coord) {
             setOrigin(coord);
             setOriginName(name || fullAddress);
+            setRoutePlaces([]);
           }
         }}
         onSelectDestination={(coord, name, fullAddress) => {
           setDestination(coord);
           setDestinationName(name || fullAddress);
+          setRoutePlaces([]);
         }}
+      />
+
+      {/* WATCH OVER ME MODAL */}
+      {selectedRoute && (
+        <WatchOverMeModal
+          visible={isWatchOverMeOpen}
+          onClose={() => setIsWatchOverMeOpen(false)}
+          route={selectedRoute}
+          destinationName={destinationName}
+          originName={originName}
+          originCoord={origin}
+          destinationCoord={destination}
+          openPlacesCount={
+            routePlaces.filter(
+              (p) =>
+                p.is24_7 ||
+                p.arrivalStatus === 'open_at_arrival' ||
+                p.arrivalStatus === 'closing_soon' ||
+                p.openAtJourneyTime === true,
+            ).length
+          }
+          onActivateGuardian={() => {
+            setIsGuardianActive(true);
+            setIsNavigating(true);
+          }}
+        />
+      )}
+
+      {/* MANAGE CONTACTS MODAL */}
+      <ManageContactsModal
+        visible={isContactsModalOpen}
+        onClose={() => setIsContactsModalOpen(false)}
+      />
+
+      {/* AUTONOMOUS SAFETY CHECK-IN / DEVIATION / STOPPAGE ALERT MODAL */}
+      <SafetyCheckInModal
+        visible={Boolean(activeAlert)}
+        alertType={activeAlert}
+        deviationMeters={deviationMeters}
+        stoppedDurationMinutes={stoppedDurationMinutes}
+        currentCoord={guardianCurrentCoord}
+        destinationName={destinationName}
+        primaryContact={primaryContact}
+        onConfirmSafe={acknowledgeAlert}
+        onSosTriggered={acknowledgeAlert}
+      />
+
+      {/* NAVIGATION SIDEBAR DRAWER (Slide-out menu with demo mode toggle) */}
+      <NavigationSidebar
+        visible={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        isNavigating={isNavigating}
+        isGuardianActive={isGuardianActive}
+        contactsCount={contacts.length}
+        onOpenContacts={() => setIsContactsModalOpen(true)}
+        showHeatmap={showHeatmap}
+        onToggleHeatmap={() => setShowHeatmap(!showHeatmap)}
+        onSimulateDeviation={simulateDeviation}
+        onSimulateStoppage={simulateStoppage}
+        onSimulateBatteryLow={simulateBatteryLow}
+        onSimulateArrival={simulateArrival}
+        onResetSimulation={acknowledgeAlert}
       />
     </SafeAreaView>
   );
 }
 
-function formatArrival(mins: number): string {
-  const d = new Date(Date.now() + mins * 60 * 1000);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
 
 // ---------------------------------------------------------------------------
 // Styles (Figma tokens)
@@ -1121,6 +1492,16 @@ const styles = StyleSheet.create({
     borderColor: '#2b3139',
     padding: 12,
   },
+  routeCardUnavailable: {
+    backgroundColor: '#0a0d10',
+    borderColor: '#1a1f26',
+    borderStyle: 'dashed',
+    opacity: 0.6,
+  },
+  unavailableEvidenceText: {
+    color: '#55606d',
+    fontStyle: 'italic',
+  },
   routeCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1206,6 +1587,34 @@ const styles = StyleSheet.create({
     color: '#b0b7c0',
     fontWeight: '600',
   },
+  partialRoutesNote: {
+    backgroundColor: 'rgba(56, 189, 248, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 10,
+  },
+  partialRoutesNoteText: {
+    fontSize: 10.5,
+    color: '#7dd3fc',
+    lineHeight: 15,
+  },
+  recommendedBadge: {
+    backgroundColor: 'rgba(74, 222, 128, 0.14)',
+    borderWidth: 1,
+    borderColor: '#4ADE80',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  recommendedBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#4ADE80',
+    letterSpacing: 0.3,
+  },
   routeEvidenceText: {
     fontSize: 11,
     color: '#b0b7c0',
@@ -1213,6 +1622,90 @@ const styles = StyleSheet.create({
   },
   fastestEvidenceText: {
     color: '#fca5a5',
+  },
+  describeRouteButton: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1.5,
+  },
+  describeRouteLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  describeRouteIcon: {
+    fontSize: 18,
+  },
+  describeRouteTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  describeRouteSubtitle: {
+    fontSize: 10,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  describeRouteChevron: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginLeft: 6,
+  },
+  contactsTopBtn: {
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#161d26',
+    borderWidth: 1,
+    borderColor: '#293544',
+  },
+  contactsTopBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#cbd5e1',
+  },
+  watchOverMeCardBtn: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#ff8a00',
+    backgroundColor: 'rgba(255, 138, 0, 0.12)',
+  },
+  watchOverMeTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#ff8a00',
+  },
+  watchOverMeChevron: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#ff8a00',
+    marginLeft: 6,
+  },
+  menuIconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#1b222c',
+    borderWidth: 1,
+    borderColor: '#2b3644',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuIconBtnText: {
+    fontSize: 16,
+    color: '#e2e8f0',
+    fontWeight: '700',
   },
   scoreExplanationBar: {
     flexDirection: 'row',

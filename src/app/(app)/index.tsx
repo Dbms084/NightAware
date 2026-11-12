@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   BackHandler,
   Dimensions,
+  FlatList,
+  Modal,
   Pressable,
   ScrollView,
   Text,
@@ -22,12 +24,11 @@ import Animated, {
 
 import { useLocation } from '@/features/location/hooks/useLocation';
 import { NightAwareMap, OriginMarker, DestinationMarker, PlaceMarker, RoutePolyline } from '@/components/map';
-import { DEMO_ORIGIN, DEMO_DESTINATION } from '@/data/mock-places';
-import { MOCK_ROUTES } from '@/data/mock-routes';
 import { LocationSearchModal, type SearchField } from '@/components/ui/LocationSearchModal';
 import { getRouteOptions, clearRouteCache, ROUTE_COLORS_BY_PROFILE } from '@/features/routes/services/route-provider';
 import { getPlacesNearRoute } from '@/features/places/services/place-provider';
 import { RouteCardSkeleton } from '@/components/ui/Skeleton';
+import { formatDuration } from '@/utils/format-time';
 import type { Coordinate, Place, RouteOption } from '@/types/geo';
 
 type TravelMode = 'Walking' | 'Cycling' | 'Driving';
@@ -39,6 +40,16 @@ const ANIMATION_DURATION = 350;
 const EASING = Easing.bezier(0.2, 0.9, 0.3, 1);
 
 type IconName = 'home' | 'account' | 'start' | 'walk' | 'bike' | 'car' | 'clock' | 'chevron' | 'moon' | 'routes' | 'info' | 'close' | 'search';
+
+function formatDateLabel(d: Date): string {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((d.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+  const datePart = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  if (diffDays === 0) return `Today, ${datePart}`;
+  if (diffDays === 1) return `Tomorrow, ${datePart}`;
+  return datePart;
+}
 
 function Icon({ name, color = ORANGE, size = 24 }: { name: IconName; color?: string; size?: number }) {
   const u = size / 24;
@@ -105,8 +116,8 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
 
   const [mode, setMode] = useState<TravelMode>('Walking');
-  const [timeIndex, setTimeIndex] = useState(0);
-  const times = ['Tonight, 22:10', 'Tonight, 22:30', 'Tomorrow, 06:30'];
+  const [isCustomTimeSet, setIsCustomTimeSet] = useState(false);
+  const [departureTime, setDepartureTime] = useState<Date>(() => new Date());
 
   // Search Modal state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -125,7 +136,155 @@ export default function HomeScreen() {
   // Routes state — start empty with no defaults
   const [routes, setRoutes] = useState<RouteOption[]>([]);
   const [isLoadingRoutes, setIsLoadingRoutes] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
   const [routePlaces, setRoutePlaces] = useState<Place[]>([]);
+
+  // ---------------------------------------------------------------------------
+  // Custom departure date & time picker
+  // ---------------------------------------------------------------------------
+  // The modal holds its own working copy of the selected date, hour and minute.
+  // It is only committed to the authoritative `departureTime` state on Confirm,
+  // so Cancel (or tapping outside) never mutates the journey. The working copy
+  // is seeded from the currently-selected departure so the modal reflects the
+  // current choice when it reopens.
+  const [isCustomTimeOpen, setIsCustomTimeOpen] = useState(false);
+  const [customDate, setCustomDate] = useState<Date | null>(null);
+  const [customHour, setCustomHour] = useState<number>(0);
+  const [customMinute, setCustomMinute] = useState<number>(0);
+  const [customTimeError, setCustomTimeError] = useState<string | null>(null);
+  // FlatList refs keep the scroll position stable when the modal reopens and
+  // avoid recreating the underlying view list on every keystroke/render.
+  const hourListRef = useRef<FlatList<number>>(null);
+  const minuteListRef = useRef<FlatList<number>>(null);
+  const dateListRef = useRef<FlatList<Date>>(null);
+
+  const HOUR_ITEMS = useMemo(() => Array.from({ length: 24 }, (_, i) => i), []);
+  const MINUTE_ITEMS = useMemo(() => Array.from({ length: 60 }, (_, i) => i), []);
+  // Generate a 7-day date range (today + 6 days ahead) so users can pick any
+  // upcoming departure date, not just the three hardcoded presets.
+  const DATE_ITEMS = useMemo(() => {
+    const today = new Date();
+    const items: Date[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() + i);
+      d.setHours(0, 0, 0, 0);
+      items.push(d);
+    }
+    return items;
+  }, []);
+
+  const openCustomTimeModal = useCallback(() => {
+    // Seed the modal with the currently-selected departure time (or current time if leaving now)
+    const now = new Date();
+    const seed = isCustomTimeSet && departureTime.getTime() > now.getTime() ? departureTime : now;
+    setCustomDate(new Date(seed));
+    setCustomHour(seed.getHours());
+    setCustomMinute(seed.getMinutes());
+    setCustomTimeError(null);
+    setIsCustomTimeOpen(true);
+  }, [isCustomTimeSet, departureTime]);
+
+  const shiftCustomDate = useCallback(
+    (deltaDays: number) => {
+      setCustomDate((prev) => {
+        const base = prev ?? departureTime;
+        const next = new Date(base);
+        next.setDate(next.getDate() + deltaDays);
+        return next;
+      });
+    },
+    [departureTime],
+  );
+
+  const confirmCustomTime = useCallback(() => {
+    if (!customDate) return;
+    // Reject any departure in the past (or within the current minute), so the
+    // journey engine never scores a trip that has already departed.
+    const now = new Date();
+    const minAllowed = new Date(now.getTime() + 60 * 1000);
+    const candidate = new Date(
+      customDate.getFullYear(),
+      customDate.getMonth(),
+      customDate.getDate(),
+      customHour,
+      customMinute,
+      0,
+      0,
+    );
+    if (candidate.getTime() < minAllowed.getTime()) {
+      setCustomTimeError('Please choose a departure at least 1 minute from now.');
+      return;
+    }
+    setCustomTimeError(null);
+    setCustomDate(candidate);
+    setIsCustomTimeSet(true);
+    setDepartureTime(candidate);
+    setIsCustomTimeOpen(false);
+  }, [customDate, customHour, customMinute]);
+
+  const cancelCustomTime = useCallback(() => {
+    setCustomTimeError(null);
+    setIsCustomTimeOpen(false);
+  }, []);
+
+  // When the custom-time modal opens, scroll both FlatLists so the currently
+  // selected hour and minute are immediately visible instead of sitting at the
+  // top of the list. The refs are only available after the FlatLists have
+  // mounted, so this runs after the modal's views are committed.
+  useEffect(() => {
+    if (!isCustomTimeOpen) return;
+    const hourRef = hourListRef.current;
+    const minuteRef = minuteListRef.current;
+    const dateRef = dateListRef.current;
+    // FlatList ref methods may be null on first paint; retry once on mount.
+    const timer = setInterval(() => {
+      let progressed = false;
+      if (dateRef && customDate) {
+        const dateIdx = DATE_ITEMS.findIndex(
+          (d) =>
+            d.getFullYear() === customDate.getFullYear() &&
+            d.getMonth() === customDate.getMonth() &&
+            d.getDate() === customDate.getDate(),
+        );
+        if (dateIdx >= 0) {
+          dateRef.scrollToIndex({ index: dateIdx, animated: false });
+          progressed = true;
+        }
+      }
+      if (hourRef && customHour >= 0 && customHour < HOUR_ITEMS.length) {
+        hourRef.scrollToIndex({ index: customHour, animated: false });
+        progressed = true;
+      }
+      if (minuteRef && customMinute >= 0 && customMinute < MINUTE_ITEMS.length) {
+        minuteRef.scrollToIndex({ index: customMinute, animated: false });
+        progressed = true;
+      }
+      if (progressed) clearInterval(timer);
+    }, 50);
+    return () => clearInterval(timer);
+  }, [isCustomTimeOpen, customDate, customHour, customMinute, DATE_ITEMS]);
+
+  const selectedDepartureLabel = useMemo(() => {
+    if (isCustomTimeSet) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const departureDay = new Date(departureTime);
+      departureDay.setHours(0, 0, 0, 0);
+      const diffDays = Math.round((departureDay.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+      const timeStr = departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      if (diffDays === 0) {
+        return `Today, ${timeStr}`;
+      }
+      if (diffDays === 1) {
+        return `Tomorrow, ${timeStr}`;
+      }
+      const datePart = departureTime.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      return `${datePart}, ${timeStr}`;
+    }
+    return 'Now';
+  }, [isCustomTimeSet, departureTime]);
 
   const hasGpsLocation = location.permissionStatus === 'granted' && location.coordinate != null;
   const isUsingCustomStart = customStartCoord != null;
@@ -158,19 +317,35 @@ export default function HomeScreen() {
   const isUsingRealData = hasLocation && hasDestination;
   const primaryRoute = routes.length > 0 ? routes[0] : null;
 
-  // Fetch POIs along the primary route
+  // Active establishments along primary route or starting point:
+  // Prefer dynamically fetched places, but immediately fall back to primaryRoute.establishments
+  // so the map never flashes blank while computing.
+  const displayedPlaces = useMemo(() => {
+    if (routePlaces && routePlaces.length > 0) return routePlaces;
+    if (primaryRoute?.establishments && primaryRoute.establishments.length > 0) {
+      return primaryRoute.establishments;
+    }
+    return [];
+  }, [routePlaces, primaryRoute]);
+
+  // Fetch POIs along route or around starting location
   useEffect(() => {
-    if (!primaryRoute) return;
+    if (!originCoord) return;
+    // Pre-seed immediately with the route's already-calculated establishments
+    if (primaryRoute?.establishments && primaryRoute.establishments.length > 0) {
+      setRoutePlaces(primaryRoute.establishments);
+    }
     let isMounted = true;
-    void getPlacesNearRoute(primaryRoute.coordinates, 280).then((places) => {
-      if (isMounted) {
+    const coords = primaryRoute ? primaryRoute.coordinates : [originCoord, originCoord];
+    void getPlacesNearRoute(coords, 280, originLabel, destName ?? undefined).then((places) => {
+      if (isMounted && places && places.length > 0) {
         setRoutePlaces(places);
       }
     });
     return () => {
       isMounted = false;
     };
-  }, [primaryRoute]);
+  }, [originCoord, primaryRoute?.id, originLabel, destName]);
 
   // Dynamic map region: centers on current focus area or fits route
   const mapRegion = useMemo(() => {
@@ -265,6 +440,7 @@ export default function HomeScreen() {
       setCustomStartCoord(coord);
       setCustomStartName(coord ? name : null);
       setCustomStartAddress(coord ? fullAddress : null);
+      setRoutePlaces([]);
       clearRouteCache();
     },
     [],
@@ -276,21 +452,26 @@ export default function HomeScreen() {
       setDestCoord(coord);
       setDestName(name);
       setDestAddress(fullAddress);
+      setRoutePlaces([]);
       clearRouteCache();
     },
     [],
   );
 
-  // Fetch real routes whenever origin, destination, or mode changes
+  // Fetch real routes whenever origin, destination, mode, or departure time
+  // changes. The selected departure time is forwarded so the scoring engine
+  // can evaluate opening hours at the time the user actually travels.
   useEffect(() => {
     if (!originCoord || !destCoord) {
       setRoutes([]);
       setIsLoadingRoutes(false);
+      setRouteError(null);
       return;
     }
 
     let cancelled = false;
     setIsLoadingRoutes(true);
+    setRouteError(null);
 
     const modeMap: Record<TravelMode, 'walking' | 'cycling' | 'driving'> = {
       Walking: 'walking',
@@ -301,8 +482,10 @@ export default function HomeScreen() {
     void getRouteOptions({
       origin: originCoord,
       destination: destCoord,
-      departureTime: new Date(),
+      departureTime,
       travelMode: modeMap[mode],
+      originName: originLabel,
+      destinationName: destName ?? undefined,
     })
       .then((fetched) => {
         if (!cancelled) {
@@ -313,6 +496,7 @@ export default function HomeScreen() {
       .catch(() => {
         if (!cancelled) {
           setRoutes([]);
+          setRouteError('Routing unavailable. Please try again.');
           setIsLoadingRoutes(false);
         }
       });
@@ -320,30 +504,27 @@ export default function HomeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [originCoord, destCoord, mode]);
+  }, [originCoord, destCoord, mode, departureTime]);
 
-  // Navigate to compare screen with active coordinates
+  // Navigate to compare screen with the actual selected coordinates.
+  // The selected departure time is forwarded so the comparison screen can
+  // compute arrival times consistent with the scoring engine.
   const handleCompare = useCallback(() => {
-    // Determine active origin (GPS, custom start, or nearby demo)
-    const activeOrigin = originCoord ?? (location.coordinate ?? (
-      destCoord
-        ? { latitude: destCoord.latitude + 0.015, longitude: destCoord.longitude - 0.012 }
-        : { latitude: 12.9779, longitude: 77.6408 }
-    ));
-
-    // Determine active destination
-    const activeDest = destCoord ?? {
-      latitude: activeOrigin.latitude - 0.014,
-      longitude: activeOrigin.longitude + 0.012,
-    };
+    if (!originCoord || !destCoord) {
+      Alert.alert(
+        'Missing location',
+        'Please select a starting point and a destination before comparing routes.',
+      );
+      return;
+    }
 
     const onameParam = encodeURIComponent(originLabel || 'Starting Point');
     const dnameParam = encodeURIComponent(destName || 'Selected Destination');
 
     router.push(
-      `/compare?olat=${activeOrigin.latitude}&olng=${activeOrigin.longitude}&dlat=${activeDest.latitude}&dlng=${activeDest.longitude}&mode=${mode}&oname=${onameParam}&dname=${dnameParam}` as never,
+      `/compare?olat=${originCoord.latitude}&olng=${originCoord.longitude}&dlat=${destCoord.latitude}&dlng=${destCoord.longitude}&mode=${mode}&departure=${departureTime.toISOString()}&oname=${onameParam}&dname=${dnameParam}` as never,
     );
-  }, [destCoord, originCoord, location.coordinate, originLabel, destName, mode, router]);
+  }, [originCoord, destCoord, originLabel, destName, mode, departureTime, router]);
 
   return (
     <SafeAreaView className="flex-1 bg-[#090b0d]" style={styles.screen} edges={['top', 'left', 'right']}>
@@ -473,21 +654,28 @@ export default function HomeScreen() {
           </View>
 
           {/* Departure time picker */}
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => setTimeIndex((timeIndex + 1) % times.length)}
-            className="mb-8 rounded-[28px] border border-[#30363e] bg-[#111519] px-5 py-5"
-          >
+          <View className="mb-8 rounded-[28px] border border-[#30363e] bg-[#111519] px-5 py-5">
             <View className="flex-row items-center">
               <Icon name="clock" size={26} />
               <Text className="ml-4 flex-1 text-[21px] text-[#f1f2f1]">Leave now</Text>
-              <Text className="text-[20px] text-[#f1f2f1]">{times[timeIndex]}</Text>
+              <Text className="text-[20px] text-[#f1f2f1]">{selectedDepartureLabel}</Text>
               <View className="ml-3"><Icon name="chevron" color="#aab2bb" size={17} /></View>
             </View>
             <Text className="mt-4 text-[18px] leading-7 text-[#aab2bb]">
               We estimate what will still be open when you pass, not just what's open now.
             </Text>
-          </Pressable>
+
+            {/* Custom date & time — opens a modal with calendar + scrollable time. */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Choose a custom departure date and time"
+              onPress={openCustomTimeModal}
+              className="mt-4 min-h-[48px] flex-row items-center justify-center gap-2 rounded-full border border-dashed border-[#ff9400]/60 bg-[#241a10]/60 py-2"
+            >
+              <Icon name="clock" color="#ff9400" size={18} />
+              <Text className="text-base font-semibold text-[#ff9400]">Custom Date &amp; Time</Text>
+            </Pressable>
+          </View>
 
           {/* Evening route header + View Map Button */}
           <View className="mb-4 flex-row items-center justify-between">
@@ -519,7 +707,7 @@ export default function HomeScreen() {
                     selected
                   />
                 )}
-                {routePlaces.map((place) => (
+                {displayedPlaces.map((place) => (
                   <PlaceMarker key={place.id} place={place} />
                 ))}
                 {originCoord && <OriginMarker coordinate={originCoord} title={originLabel} />}
@@ -546,6 +734,25 @@ export default function HomeScreen() {
             </View>
           )}
 
+          {/* ROUTE ERROR STATE — shown when Valhalla fails or returns no routes.
+              No fabricated or mock recommendations are ever displayed. */}
+          {routeError && !isLoadingRoutes && (
+            <View className="mb-6 flex-row items-center rounded-2xl border border-[#f87171]/40 bg-[#2a1414] px-5 py-4">
+              <Icon name="info" color="#f87171" size={22} />
+              <Text className="ml-3 flex-1 text-base text-[#f1f2f1]">{routeError}</Text>
+            </View>
+          )}
+
+          {/* EMPTY ROUTE STATE — routing succeeded but produced no alternatives. */}
+          {!isLoadingRoutes && !routeError && routes.length === 0 && hasLocation && hasDestination && (
+            <View className="mb-6 flex-row items-center rounded-2xl border border-[#30363e] bg-[#111519] px-5 py-4">
+              <Icon name="moon" color="#aab2bb" size={22} />
+              <Text className="ml-3 flex-1 text-base text-[#b0b7c0]">
+                No night routes available for this journey right now.
+              </Text>
+            </View>
+          )}
+
           {/* Compare routes action button */}
           <Pressable
             accessibilityRole="button"
@@ -558,13 +765,13 @@ export default function HomeScreen() {
             <Icon name="routes" color="#101214" size={25} />
           </Pressable>
 
-          <View className="mt-7 flex-row items-center px-1">
+          {/* <View className="mt-7 flex-row items-center px-1">
             <Icon name="info" color="#84909c" size={22} />
             <Text className="ml-3 flex-1 text-base leading-6 text-[#84909c]">
               Activity indicators, not a safety guarantee.{' '}
-              {isUsingRealData ? 'Live Google Maps Routes & Places data.' : 'Demo data may be incomplete.'}
+              {isUsingRealData ? 'Valhalla routing + OpenStreetMap POIs.' : 'Demo data may be incomplete.'}
             </Text>
-          </View>
+          </View> */}
         </View>
       </ScrollView>
 
@@ -592,7 +799,7 @@ export default function HomeScreen() {
                 zIndex={routes.length - i}
               />
             ))}
-            {routePlaces.map((place) => (
+            {displayedPlaces.map((place) => (
               <PlaceMarker key={place.id} place={place} />
             ))}
             {originCoord && <OriginMarker coordinate={originCoord} title={originLabel} />}
@@ -627,7 +834,7 @@ export default function HomeScreen() {
                 <Text style={styles.expandedTitle}>{primaryRoute?.label || (destCoordFinal ? 'Recommended' : 'Your area')}</Text>
                 <Text style={styles.expandedSub}>
                   {primaryRoute
-                    ? `${primaryRoute.durationMinutes} min · ${(primaryRoute.distanceMeters / 1000).toFixed(1)} km`
+                    ? `${formatDuration(primaryRoute.durationMinutes)} · ${(primaryRoute.distanceMeters / 1000).toFixed(1)} km`
                     : 'Choose destination to compare'}
                 </Text>
               </View>
@@ -667,6 +874,211 @@ export default function HomeScreen() {
         onSelectStart={handleSelectStart}
         onSelectDestination={handleSelectDestination}
       />
+
+      {/* Custom departure date & time picker modal */}
+      <Modal
+        visible={isCustomTimeOpen}
+        animationType="slide"
+        transparent
+        presentationStyle="overFullScreen"
+        onRequestClose={cancelCustomTime}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Choose departure time</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close departure picker"
+                onPress={cancelCustomTime}
+                style={styles.modalCloseBtn}
+              >
+                <Text style={styles.modalCloseText}>✕</Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.modalSubtitle}>Select a date, hour and minute for your journey.</Text>
+
+            {customTimeError ? (
+              <View style={styles.customTimeError}>
+                <Text style={styles.customTimeErrorText}>{customTimeError}</Text>
+              </View>
+            ) : null}
+
+            {/* DATE column */}
+            <Text style={styles.pickerColumnLabel}>DATE</Text>
+            <FlatList
+              ref={dateListRef}
+              data={DATE_ITEMS}
+              keyExtractor={(d) => d.toDateString()}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              initialScrollIndex={DATE_ITEMS.findIndex(
+                (d) =>
+                  customDate &&
+                  d.getFullYear() === customDate.getFullYear() &&
+                  d.getMonth() === customDate.getMonth() &&
+                  d.getDate() === customDate.getDate(),
+              )}
+              getItemLayout={(_, index) => ({
+                length: 78,
+                offset: 78 * index,
+                index,
+              })}
+              renderItem={({ item }) => {
+                const selected =
+                  !!customDate &&
+                  item.getFullYear() === customDate.getFullYear() &&
+                  item.getMonth() === customDate.getMonth() &&
+                  item.getDate() === customDate.getDate();
+                return (
+                  <Pressable
+                    onPress={() => {
+                      setCustomDate((prev) => {
+                        const base = prev ?? new Date();
+                        const next = new Date(item);
+                        next.setHours(base.getHours(), base.getMinutes(), 0, 0);
+                        return next;
+                      });
+                    }}
+                    style={[
+                      styles.pickerChip,
+                      selected && styles.pickerChipSelected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.pickerChipText,
+                        selected && styles.pickerChipTextSelected,
+                      ]}
+                    >
+                      {formatDateLabel(item)}
+                    </Text>
+                  </Pressable>
+                );
+              }}
+              contentContainerStyle={styles.pickerListContent}
+            />
+
+            {/* HOUR column */}
+            <Text style={[styles.pickerColumnLabel, styles.pickerColumnLabelSpaced]}>HOUR</Text>
+            <FlatList
+              ref={hourListRef}
+              data={HOUR_ITEMS}
+              keyExtractor={(h) => String(h)}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              initialScrollIndex={Math.min(Math.max(customHour, 0), HOUR_ITEMS.length - 1)}
+              getItemLayout={(_, index) => ({
+                length: 56,
+                offset: 56 * index,
+                index,
+              })}
+              renderItem={({ item }) => {
+                const selected = customHour === item;
+                return (
+                  <Pressable
+                    onPress={() => setCustomHour(item)}
+                    style={[
+                      styles.pickerChip,
+                      selected && styles.pickerChipSelected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.pickerChipText,
+                        selected && styles.pickerChipTextSelected,
+                      ]}
+                    >
+                      {String(item).padStart(2, '0')}
+                    </Text>
+                  </Pressable>
+                );
+              }}
+              contentContainerStyle={styles.pickerListContent}
+            />
+
+            {/* MINUTE column */}
+            <Text style={[styles.pickerColumnLabel, styles.pickerColumnLabelSpaced]}>MINUTE</Text>
+            <FlatList
+              ref={minuteListRef}
+              data={MINUTE_ITEMS}
+              keyExtractor={(m) => String(m)}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              initialScrollIndex={Math.min(Math.max(customMinute, 0), MINUTE_ITEMS.length - 1)}
+              getItemLayout={(_, index) => ({
+                length: 56,
+                offset: 56 * index,
+                index,
+              })}
+              renderItem={({ item }) => {
+                const selected = customMinute === item;
+                return (
+                  <Pressable
+                    onPress={() => setCustomMinute(item)}
+                    style={[
+                      styles.pickerChip,
+                      selected && styles.pickerChipSelected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.pickerChipText,
+                        selected && styles.pickerChipTextSelected,
+                      ]}
+                    >
+                      {String(item).padStart(2, '0')}
+                    </Text>
+                  </Pressable>
+                );
+              }}
+              contentContainerStyle={styles.pickerListContent}
+            />
+
+            {/* Preview */}
+            <View style={styles.previewRow}>
+              <Text style={styles.previewLabel}>Departing</Text>
+              <Text style={styles.previewValue}>
+                {customDate
+                  ? new Date(
+                      customDate.getFullYear(),
+                      customDate.getMonth(),
+                      customDate.getDate(),
+                      customHour,
+                      customMinute,
+                    ).toLocaleString([], {
+                      weekday: 'short',
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : '—'}
+              </Text>
+            </View>
+
+            <View style={styles.modalActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel departure selection"
+                onPress={cancelCustomTime}
+                style={styles.modalCancelBtn}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Confirm departure time"
+                onPress={confirmCustomTime}
+                style={styles.modalConfirmBtn}
+              >
+                <Text style={styles.modalConfirmText}>Confirm</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -674,6 +1086,160 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#090b0d' },
   scrollContent: { paddingBottom: 32 },
+
+  // Custom departure date & time picker modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(9, 11, 13, 0.82)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '88%',
+    backgroundColor: '#111519',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#30363e',
+    padding: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  modalTitle: {
+    color: '#f1f2f1',
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  modalCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#1a1f24',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#30363e',
+  },
+  modalCloseText: {
+    color: '#aab2bb',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  modalSubtitle: {
+    color: '#85909b',
+    fontSize: 14,
+    marginBottom: 14,
+  },
+  customTimeError: {
+    backgroundColor: 'rgba(248, 113, 113, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.4)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 14,
+  },
+  customTimeErrorText: {
+    color: '#fca5a5',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  pickerColumnLabel: {
+    color: '#85909b',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  pickerColumnLabelSpaced: {
+    marginTop: 14,
+  },
+  pickerListContent: {
+    paddingHorizontal: 8,
+    gap: 6,
+  },
+  pickerChip: {
+    minWidth: 74,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: '#1a1f24',
+    borderWidth: 1,
+    borderColor: '#30363e',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerChipSelected: {
+    backgroundColor: '#241a10',
+    borderColor: '#ff9400',
+  },
+  pickerChipText: {
+    color: '#b0b7c0',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  pickerChipTextSelected: {
+    color: '#ff9400',
+    fontWeight: '700',
+  },
+  previewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 22,
+    backgroundColor: '#1a1f24',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#30363e',
+  },
+  previewLabel: {
+    color: '#85909b',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  previewValue: {
+    color: '#f1f2f1',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 20,
+  },
+  modalCancelBtn: {
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: '#1a1f24',
+    borderWidth: 1,
+    borderColor: '#30363e',
+  },
+  modalCancelText: {
+    color: '#b0b7c0',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  modalConfirmBtn: {
+    paddingHorizontal: 26,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: '#ff9400',
+  },
+  modalConfirmText: {
+    color: '#101214',
+    fontSize: 15,
+    fontWeight: '800',
+  },
 
   viewMapButton: {
     paddingHorizontal: 14,

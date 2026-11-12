@@ -7,7 +7,7 @@
  * - Complete scrollable list of every establishment with arrival times & direct Call button.
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   Linking,
   Pressable,
@@ -19,6 +19,9 @@ import {
 
 import type { Place, PlaceCategory, RouteOption } from '@/types/geo';
 import { PLACE_CATEGORY_ICONS, PLACE_CATEGORY_LABELS, PLACE_MARKER_COLORS } from '@/types/geo';
+import { formatDuration } from '@/utils/format-time';
+import { TransportAvailabilityIndicator } from '@/components/ui/TransportAvailabilityIndicator';
+import { evaluateTransportAvailability } from '@/features/transit/services/transit-service';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -30,11 +33,21 @@ export type RouteDetailSheetProps = {
   onClose: () => void;
   onFocusPlace?: (place: Place) => void;
   onStartNavigation?: () => void;
+  initialTab?: 'analysis' | 'places';
+  departureTime?: Date;
+  originName?: string;
+  destinationName?: string;
 };
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+const CATEGORY_TABS = [
+  { id: 'all', label: 'All Places' },
+  { id: 'pharmacy', label: '💊 Pharmacies' },
+  { id: 'hospital', label: '🏥 Hospitals' },
+  { id: 'police', label: '👮 Police' },
+  { id: 'shop_food', label: '🏪 Open Shops' },
+  { id: 'petrol_station', label: '⛽ Petrol' },
+  { id: 'transport', label: '🚇 Transit' },
+];
 
 export function RouteDetailSheet({
   route,
@@ -42,16 +55,94 @@ export function RouteDetailSheet({
   onClose,
   onFocusPlace,
   onStartNavigation,
+  initialTab = 'analysis',
+  departureTime,
+  originName,
+  destinationName,
 }: RouteDetailSheetProps) {
-  const [activeTab, setActiveTab] = useState<'analysis' | 'places'>('analysis');
+  const [activeTab, setActiveTab] = useState<'analysis' | 'places'>(initialTab);
+  const [placeCategory, setPlaceCategory] = useState<string>('all');
+  const [onlyOpen, setOnlyOpen] = useState(false);
   const score = route.nightActivityScore;
+
+  const transportSummary = useMemo(() => {
+    return evaluateTransportAvailability(
+      places,
+      departureTime ?? new Date(),
+      route.coordinates,
+      originName,
+      destinationName,
+    );
+  }, [places, departureTime, route.coordinates, originName, destinationName]);
   const breakdown = route.scoreBreakdown;
 
-  // Establishments sorted by distance from start
-  const establishments = (route.establishments && route.establishments.length > 0
-    ? route.establishments
-    : places
-  ).sort((a, b) => (a.distanceFromStartMeters ?? 0) - (b.distanceFromStartMeters ?? 0));
+  // 1. Base safety POIs along route (pharmacies, hospitals, police, petrol, open shops)
+  const baseSafetyPlaces = useMemo(() => {
+    // Prefer dynamically fetched places over static route.establishments
+    const pool = (places && places.length > 0
+      ? places
+      : route.establishments && route.establishments.length > 0
+      ? route.establishments
+      : []
+    );
+    // Strip un-synchronized or outdated transport items from base pool
+    return pool.filter((p) => p.category !== 'transport');
+  }, [places, route.establishments]);
+
+  // 2. Dynamic transit places strictly synchronized with nearest transit evaluation
+  const nearestTransitPlaces = useMemo((): Place[] => {
+    if (!transportSummary || !transportSummary.stops || transportSummary.stops.length === 0) {
+      return [];
+    }
+
+    return transportSummary.stops.map((stop) => {
+      const isMetro = stop.subType === 'metro' || stop.type === 'metro';
+      const isTerminus = stop.subType === 'bus_terminus';
+      return {
+        id: stop.id,
+        name: stop.name,
+        category: 'transport' as PlaceCategory,
+        coordinate: stop.coordinate,
+        distanceFromStartMeters: stop.distanceMeters,
+        distanceFromRouteMeters: stop.distanceMeters,
+        openAtJourneyTime: stop.isOpenAtTime,
+        arrivalStatus: stop.isOpenAtTime ? 'open_at_arrival' : 'closed_at_arrival',
+        openTime: stop.openTime,
+        closeTime: stop.closeTime,
+        is24_7: stop.statusText.includes('24/7'),
+        dataSource: 'provider',
+        address: `${isMetro ? '🚇 Metro Station' : isTerminus ? '🏢 Bus Terminus' : '🚏 Bus Stop'} · ~${stop.walkingMinutes} min walk from start`,
+        phone: '112',
+      };
+    });
+  }, [transportSummary, places, route.establishments]);
+
+  // 3. Combined establishments sorted by distance from start
+  const establishments = useMemo(() => {
+    return [...baseSafetyPlaces, ...nearestTransitPlaces].sort(
+      (a, b) => (a.distanceFromStartMeters ?? 0) - (b.distanceFromStartMeters ?? 0),
+    );
+  }, [baseSafetyPlaces, nearestTransitPlaces]);
+
+  const openCount = establishments.filter(
+    (p) =>
+      p.is24_7 ||
+      p.arrivalStatus === 'open_at_arrival' ||
+      p.arrivalStatus === 'closing_soon' ||
+      p.openAtJourneyTime === true,
+  ).length;
+  const closedCount = establishments.length - openCount;
+
+  const filteredEstablishments = establishments.filter((p) => {
+    const matchesCategory = placeCategory === 'all' || p.category === placeCategory;
+    const isOpen =
+      p.is24_7 ||
+      p.arrivalStatus === 'open_at_arrival' ||
+      p.arrivalStatus === 'closing_soon' ||
+      p.openAtJourneyTime === true;
+    if (onlyOpen && !isOpen) return false;
+    return matchesCategory;
+  });
 
   const handleCall = (phone?: string) => {
     if (!phone) return;
@@ -89,11 +180,11 @@ export function RouteDetailSheet({
               />
               <Text style={styles.profileBadge}>{route.label}</Text>
               {route.extraMinutes > 0 && (
-                <Text style={styles.extraTimeText}>+{route.extraMinutes} min</Text>
+                <Text style={styles.extraTimeText}>+{formatDuration(route.extraMinutes)}</Text>
               )}
             </View>
             <Text style={styles.metricsSummary}>
-              {route.durationMinutes} min · {(route.distanceMeters / 1000).toFixed(1)} km
+              {formatDuration(route.durationMinutes)} · {(route.distanceMeters / 1000).toFixed(1)} km
             </Text>
           </View>
 
@@ -229,6 +320,12 @@ export function RouteDetailSheet({
                 />
               </View>
 
+              {/* Transport Availability Indicator Section */}
+              <TransportAvailabilityIndicator
+                summary={transportSummary}
+                initiallyExpanded={false}
+              />
+
               {/* Disclaimer */}
               <Text style={styles.disclaimerText}>
                 The Night Activity Score represents mapped safety-supporting indicators
@@ -237,90 +334,205 @@ export function RouteDetailSheet({
             </>
           ) : (
             <>
-              {/* List of establishments along route */}
-              <Text style={styles.sectionHeader}>
-                Establishments along route ({establishments.length})
-              </Text>
+              {/* Open vs Closed Summary & Quick Filter */}
+              <View style={styles.openStatusBanner}>
+                <View style={styles.openStatusCounts}>
+                  <Text style={styles.openStatusTextGreen}>
+                    🟢 {openCount} Open at arrival
+                  </Text>
+                  <Text style={styles.openStatusDivider}>·</Text>
+                  <Text style={styles.openStatusTextRed}>
+                    🔴 {closedCount} Closed
+                  </Text>
+                </View>
+                <Pressable
+                  style={[
+                    styles.onlyOpenToggleBtn,
+                    onlyOpen && styles.onlyOpenToggleBtnActive,
+                  ]}
+                  onPress={() => setOnlyOpen(!onlyOpen)}
+                >
+                  <Text
+                    style={[
+                      styles.onlyOpenToggleText,
+                      onlyOpen && styles.onlyOpenToggleTextActive,
+                    ]}
+                  >
+                    {onlyOpen ? '✓ Open Only' : 'Filter: Open Only'}
+                  </Text>
+                </Pressable>
+              </View>
 
-              {establishments.map((place) => {
-                const icon = PLACE_CATEGORY_ICONS[place.category] || '📍';
-                const label = PLACE_CATEGORY_LABELS[place.category] || 'Place';
-                const color = PLACE_MARKER_COLORS[place.category] || '#64748b';
+              {/* Category Filter Chips inside Sheet */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.sheetFilterScroll}
+                contentContainerStyle={styles.sheetFilterContent}
+              >
+                {CATEGORY_TABS.map((tab) => {
+                  const isActive = placeCategory === tab.id;
+                  const count =
+                    tab.id === 'all'
+                      ? establishments.length
+                      : establishments.filter((p) => p.category === tab.id).length;
 
-                let statusBadge = 'Unknown';
-                let statusBadgeBg = '#334155';
-
-                if (place.is24_7) {
-                  statusBadge = '24/7 Open';
-                  statusBadgeBg = '#15803d';
-                } else if (place.arrivalStatus === 'closing_soon') {
-                  statusBadge = 'Closing Soon';
-                  statusBadgeBg = '#b45309';
-                } else if (
-                  place.arrivalStatus === 'closed_at_arrival' ||
-                  place.openAtJourneyTime === false
-                ) {
-                  statusBadge = 'Closed at Arrival';
-                  statusBadgeBg = '#475569';
-                } else if (
-                  place.arrivalStatus === 'open_at_arrival' ||
-                  place.openAtJourneyTime === true
-                ) {
-                  statusBadge = 'Open at Arrival';
-                  statusBadgeBg = '#166534';
-                }
-
-                return (
-                  <View key={place.id} style={styles.placeCard}>
-                    <View style={styles.placeHeaderRow}>
-                      <View style={[styles.placeIconBox, { borderColor: color }]}>
-                        <Text style={styles.placeIconText}>{icon}</Text>
-                      </View>
-                      <View style={styles.placeInfo}>
-                        <Text style={styles.placeName}>{place.name}</Text>
-                        <Text style={styles.placeAddress}>
-                          {place.address || label}
-                        </Text>
-                      </View>
-                      <View style={[styles.statusBadge, { backgroundColor: statusBadgeBg }]}>
-                        <Text style={styles.statusBadgeText}>{statusBadge}</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.placeMetaRow}>
-                      <Text style={styles.placeMetaText}>
-                        📍 {place.distanceFromStartMeters ?? 0}m along route
+                  return (
+                    <Pressable
+                      key={tab.id}
+                      style={[styles.sheetChip, isActive && styles.sheetChipActive]}
+                      onPress={() => setPlaceCategory(tab.id)}
+                    >
+                      <Text
+                        style={[
+                          styles.sheetChipText,
+                          isActive && styles.sheetChipTextActive,
+                        ]}
+                      >
+                        {tab.label} {count > 0 ? `(${count})` : ''}
                       </Text>
-                      {place.estimatedArrivalTime ? (
-                        <Text style={styles.placeMetaText}>
-                          ⏰ Arrive ~{place.estimatedArrivalTime}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+
+              {/* List of establishments along route */}
+              <View style={styles.sheetPlacesCountRow}>
+                <Text style={styles.sectionHeader}>
+                  {placeCategory === 'all'
+                    ? `Establishments along route (${filteredEstablishments.length})`
+                    : `${CATEGORY_TABS.find((t) => t.id === placeCategory)?.label || 'Places'} (${filteredEstablishments.length})`}
+                </Text>
+                <Text style={styles.sheetPlacesSubtext}>Ordered by distance from start</Text>
+              </View>
+
+              {filteredEstablishments.length === 0 ? (
+                <View style={styles.emptyPlacesBox}>
+                  <Text style={styles.emptyPlacesEmoji}>🔍</Text>
+                  <Text style={styles.emptyPlacesText}>
+                    {onlyOpen
+                      ? 'No open establishments found matching this filter.'
+                      : 'No places found in this category along this route.'}
+                  </Text>
+                </View>
+              ) : (
+                filteredEstablishments.map((place) => {
+                  const icon = PLACE_CATEGORY_ICONS[place.category] || '📍';
+                  const label = PLACE_CATEGORY_LABELS[place.category] || 'Place';
+                  const color = PLACE_MARKER_COLORS[place.category] || '#64748b';
+
+                  const isOpen =
+                    place.is24_7 ||
+                    place.arrivalStatus === 'open_at_arrival' ||
+                    place.arrivalStatus === 'closing_soon' ||
+                    place.openAtJourneyTime === true;
+
+                  let statusBadge = 'Unknown';
+                  let statusBadgeBg = '#334155';
+
+                  if (place.is24_7) {
+                    statusBadge = '24/7 OPEN';
+                    statusBadgeBg = '#15803d';
+                  } else if (place.arrivalStatus === 'closing_soon') {
+                    statusBadge = 'CLOSING SOON';
+                    statusBadgeBg = '#b45309';
+                  } else if (
+                    place.arrivalStatus === 'closed_at_arrival' ||
+                    place.openAtJourneyTime === false
+                  ) {
+                    statusBadge = 'CLOSED AT ARRIVAL';
+                    statusBadgeBg = '#7f1d1d';
+                  } else if (
+                    place.arrivalStatus === 'open_at_arrival' ||
+                    place.openAtJourneyTime === true
+                  ) {
+                    statusBadge = 'OPEN AT ARRIVAL';
+                    statusBadgeBg = '#166534';
+                  }
+
+                  const hoursText = place.is24_7
+                    ? 'Open 24 Hours (Round-the-clock)'
+                    : place.openTime && place.closeTime
+                    ? `${place.openTime} – ${place.closeTime}`
+                    : isOpen
+                    ? 'Open late tonight'
+                    : 'Check operating schedule';
+
+                  return (
+                    <View
+                      key={place.id}
+                      style={[
+                        styles.placeCard,
+                        isOpen
+                          ? { borderColor: 'rgba(34, 197, 94, 0.35)' }
+                          : { borderColor: '#262d36', opacity: 0.8 },
+                      ]}
+                    >
+                      <View style={styles.placeHeaderRow}>
+                        <View style={[styles.placeIconBox, { borderColor: color }]}>
+                          <Text style={styles.placeIconText}>{icon}</Text>
+                        </View>
+                        <View style={styles.placeInfo}>
+                          <Text style={styles.placeName}>{place.name}</Text>
+                          <Text style={styles.placeAddress}>
+                            {place.address || label}
+                          </Text>
+                        </View>
+                        <View style={[styles.statusBadge, { backgroundColor: statusBadgeBg }]}>
+                          <Text style={styles.statusBadgeText}>{statusBadge}</Text>
+                        </View>
+                      </View>
+
+                      {/* Operating Hours & Arrival Status Highlight */}
+                      <View style={styles.placeHoursRow}>
+                        <Text style={styles.placeHoursText}>
+                          🕒 {hoursText}
                         </Text>
-                      ) : null}
-                    </View>
-
-                    {/* Actions: Call button & Focus on Map */}
-                    <View style={styles.placeActionsRow}>
-                      {place.phone ? (
-                        <Pressable
-                          style={styles.callButton}
-                          onPress={() => handleCall(place.phone)}
+                        <Text
+                          style={[
+                            styles.placeOpenIndicator,
+                            isOpen ? styles.textGreen : styles.textRed,
+                          ]}
                         >
-                          <Text style={styles.callButtonText}>📞 Call {place.phone}</Text>
-                        </Pressable>
-                      ) : null}
+                          {isOpen ? '● Verified Open' : '● Closed'}
+                        </Text>
+                      </View>
 
-                      {onFocusPlace ? (
-                        <Pressable
-                          style={styles.focusButton}
-                          onPress={() => onFocusPlace(place)}
-                        >
-                          <Text style={styles.focusButtonText}>Show on Map</Text>
-                        </Pressable>
-                      ) : null}
+                      <View style={styles.placeMetaRow}>
+                        <Text style={styles.placeMetaText}>
+                          📍 {place.distanceFromStartMeters ?? 0}m along route
+                        </Text>
+                        {place.estimatedArrivalTime ? (
+                          <Text style={styles.placeMetaText}>
+                            ⏰ Arrive ~{place.estimatedArrivalTime}
+                          </Text>
+                        ) : null}
+                      </View>
+
+                      {/* Actions: Call button & Focus on Map */}
+                      <View style={styles.placeActionsRow}>
+                        {place.phone ? (
+                          <Pressable
+                            style={styles.callButton}
+                            onPress={() => handleCall(place.phone)}
+                          >
+                            <Text style={styles.callButtonText}>📞 Call {place.phone}</Text>
+                          </Pressable>
+                        ) : null}
+
+                        {onFocusPlace ? (
+                          <Pressable
+                            style={styles.focusButton}
+                            onPress={() => onFocusPlace(place)}
+                          >
+                            <Text style={styles.focusButtonText}>Show on Map</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
                     </View>
-                  </View>
-                );
-              })}
+                  );
+                })
+              )}
             </>
           )}
 
@@ -695,5 +907,138 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
     color: '#080a0c',
+  },
+  openStatusBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#11151a',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1e242d',
+    marginBottom: 10,
+  },
+  openStatusCounts: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  openStatusTextGreen: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#22c55e',
+  },
+  openStatusDivider: {
+    color: '#475569',
+    fontSize: 12,
+  },
+  openStatusTextRed: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#f87171',
+  },
+  onlyOpenToggleBtn: {
+    backgroundColor: '#1a222c',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  onlyOpenToggleBtnActive: {
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    borderColor: '#22c55e',
+  },
+  onlyOpenToggleText: {
+    fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: '600',
+  },
+  onlyOpenToggleTextActive: {
+    color: '#22c55e',
+    fontWeight: '700',
+  },
+  placeHoursRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#151b22',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginTop: 8,
+  },
+  placeHoursText: {
+    fontSize: 11,
+    color: '#cbd5e1',
+    fontWeight: '500',
+  },
+  placeOpenIndicator: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  textGreen: {
+    color: '#22c55e',
+  },
+  textRed: {
+    color: '#f87171',
+  },
+  sheetFilterScroll: {
+    marginBottom: 12,
+  },
+  sheetFilterContent: {
+    gap: 8,
+    paddingVertical: 2,
+  },
+  sheetChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: '#161d24',
+    borderWidth: 1,
+    borderColor: '#26313d',
+  },
+  sheetChipActive: {
+    backgroundColor: 'rgba(255, 138, 0, 0.2)',
+    borderColor: '#ff8a00',
+  },
+  sheetChipText: {
+    fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: '600',
+  },
+  sheetChipTextActive: {
+    color: '#ff8a00',
+    fontWeight: '700',
+  },
+  sheetPlacesCountRow: {
+    marginBottom: 8,
+  },
+  sheetPlacesSubtext: {
+    fontSize: 10,
+    color: '#64748b',
+    marginTop: -4,
+    marginBottom: 6,
+  },
+  emptyPlacesBox: {
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#11151a',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1e252e',
+    marginVertical: 12,
+  },
+  emptyPlacesEmoji: {
+    fontSize: 28,
+    marginBottom: 8,
+  },
+  emptyPlacesText: {
+    fontSize: 12,
+    color: '#94a3b8',
+    textAlign: 'center',
   },
 });
