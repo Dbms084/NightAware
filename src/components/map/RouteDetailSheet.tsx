@@ -46,7 +46,7 @@ const CATEGORY_TABS = [
   { id: 'police', label: '👮 Police' },
   { id: 'shop_food', label: '🏪 Open Shops' },
   { id: 'petrol_station', label: '⛽ Petrol' },
-  { id: 'transport', label: '🚇 Transit' },
+  { id: 'transport', label: '🚏 Bus & Transit' },
 ];
 
 export function RouteDetailSheet({
@@ -111,7 +111,7 @@ export function RouteDetailSheet({
         closeTime: stop.closeTime,
         is24_7: stop.statusText.includes('24/7'),
         dataSource: 'provider',
-        address: `${isMetro ? '🚇 Metro Station' : isTerminus ? '🏢 Bus Terminus' : '🚏 Bus Stop'} · ~${stop.walkingMinutes} min walk from start`,
+        address: `${isMetro ? '🚇 Metro Station' : isTerminus ? '🏢 Bus Terminus / Stand' : '🚏 Bus Stop / Stand'} · ~${stop.walkingMinutes} min walk from start`,
         phone: '112',
       };
     });

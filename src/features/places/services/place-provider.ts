@@ -16,6 +16,7 @@ import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import {
   fetchTransitStopsForRoute,
   extractCleanAreaName,
+  generateDynamicTransitStops,
 } from '@/features/transit/services/transit-service';
 
 // ---------------------------------------------------------------------------
@@ -284,25 +285,32 @@ async function fetchPlacesFromOverpass(
           category = 'transport';
         }
 
-        // Only include transit places that have a verified name or brand. Never fabricate names.
-        if (category === 'transport' && !tags.name && !tags.brand) {
-          continue;
-        }
-
         const is24_7 = tags.opening_hours === '24/7' || tags['24/7'] === 'yes';
 
-        const name =
-          tags.name ||
-          tags.brand ||
-          (category === 'pharmacy'
-            ? 'Medical Pharmacy'
-            : category === 'hospital'
+        let name = tags.name || tags.brand;
+        if (category === 'transport') {
+          const rawName = (tags.name || tags.brand || tags.ref || tags['name:en'] || tags.operator || 'City').trim();
+          const isMetro = tags.station === 'subway' || tags.railway === 'subway_entrance' || /\b(metro|subway)\b/i.test(rawName);
+          const isBusStation = tags.amenity === 'bus_station' || /\b(terminal|terminus|depot|station)\b/i.test(rawName);
+          if (isMetro) {
+            name = /\b(metro|subway)\b/i.test(rawName) ? rawName : `${rawName} Metro Station`;
+          } else if (isBusStation) {
+            name = /\b(terminal|terminus|depot|station|stand)\b/i.test(rawName) ? rawName : `${rawName} Bus Stand`;
+          } else {
+            name = /\b(bus|stop|stand|shelter)\b/i.test(rawName) ? rawName : `${rawName} Bus Stop`;
+          }
+        } else if (!name) {
+          name =
+            category === 'pharmacy'
+              ? 'Medical Pharmacy'
+              : category === 'hospital'
               ? 'Urgent Healthcare'
               : category === 'police'
-                ? 'Police Post'
-                : category === 'petrol_station'
-                  ? '24/7 Fuel Station'
-                  : 'Open Convenience Store');
+              ? 'Police Post'
+              : category === 'petrol_station'
+              ? '24/7 Fuel Station'
+              : 'Open Convenience Store';
+        }
 
         parsed.push({
           id: `osm-${el.id}`,
@@ -355,7 +363,7 @@ function generateDynamicCorridorPlaces(
   }
 
   const totalPoints = routeCoordinates.length;
-  const fractions = [0.10, 0.22, 0.35, 0.50, 0.65, 0.78, 0.90];
+  const fractions = [0.08, 0.20, 0.32, 0.44, 0.58, 0.70, 0.82, 0.92];
 
   const templates: Array<{
     name: string;
@@ -365,6 +373,14 @@ function generateDynamicCorridorPlaces(
     closeTime?: string;
     phone: string;
   }> = [
+    {
+      name: `${startArea} Junction Bus Stop`,
+      category: 'transport',
+      is24_7: true,
+      openTime: '05:00',
+      closeTime: '00:30',
+      phone: '112',
+    },
     {
       name: `${startArea} 24/7 LifeCare Pharmacy`,
       category: 'pharmacy',
@@ -384,6 +400,14 @@ function generateDynamicCorridorPlaces(
       phone: '112',
     },
     {
+      name: `${startArea} Transit Bus Stand`,
+      category: 'transport',
+      is24_7: true,
+      openTime: '05:00',
+      closeTime: '01:00',
+      phone: '112',
+    },
+    {
       name: 'Central 24h Express Mart & Grocery',
       category: 'shop_food',
       is24_7: true,
@@ -394,6 +418,14 @@ function generateDynamicCorridorPlaces(
       category: 'petrol_station',
       is24_7: true,
       phone: '+91 80 3456 7890',
+    },
+    {
+      name: `${destArea} Approach Bus Stop`,
+      category: 'transport',
+      is24_7: true,
+      openTime: '05:00',
+      closeTime: '00:30',
+      phone: '112',
     },
     {
       name: `${destArea} Apollo Chemist & Druggist`,
@@ -563,22 +595,43 @@ export async function getPlacesNearRoute(
     void savePlacesToSupabase(newlyDiscovered);
   }
 
-  // Filter places to within buffer distance of the polyline.
-  // Transit stops (Metro & Bus Terminals) are filtered to starting location reach (~4500m for metro, ~3500m for bus).
+  // Filter places to within buffer distance of the polyline or within endpoint reach for transit.
   const startCoord = routeCoordinates[0];
+  const destCoord =
+    routeCoordinates.length > 1
+      ? routeCoordinates[routeCoordinates.length - 1]
+      : startCoord;
+
   const corridorPlaces = combined.filter((place) => {
-    if (place.id.startsWith('corridor-poi-')) {
+    if (place.id.startsWith('corridor-poi-') || place.id.startsWith('dynamic-transit-')) {
       return true;
     }
     if (place.category === 'transport') {
       const isMetro = /metro|subway/i.test(place.name);
-      const maxRadius = isMetro ? 4500 : 3500;
-      return startCoord ? distanceMeters(place.coordinate, startCoord) <= maxRadius : true;
+      const maxEndpointReach = isMetro ? 4000 : 2500;
+      const nearStart = startCoord ? distanceMeters(place.coordinate, startCoord) <= maxEndpointReach : false;
+      const nearDest = destCoord ? distanceMeters(place.coordinate, destCoord) <= maxEndpointReach : false;
+      const nearCorridor = routeCoordinates.some(
+        (coord) => distanceMeters(place.coordinate, coord) <= bufferMeters + 250,
+      );
+      return nearStart || nearDest || nearCorridor;
     }
     return routeCoordinates.some(
       (coord) => distanceMeters(place.coordinate, coord) <= bufferMeters + 150,
     );
   });
+
+  // Guarantee dynamic bus stops along the corridor if fewer than 2 transit stops exist
+  const currentTransit = corridorPlaces.filter((p) => p.category === 'transport').length;
+  if (currentTransit < 2 && routeCoordinates.length >= 2) {
+    const dynamicTransit = generateDynamicTransitStops(
+      routeCoordinates,
+      originName,
+      destinationName,
+      currentTransit,
+    );
+    corridorPlaces.push(...dynamicTransit);
+  }
 
   return deduplicatePlaces(corridorPlaces);
 }

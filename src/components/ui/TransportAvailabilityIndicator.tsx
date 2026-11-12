@@ -59,10 +59,10 @@ export function TransportAvailabilityIndicator({
             <Text style={styles.headerEmoji}>🚇</Text>
             <View style={styles.headerTitleTextCol}>
               <Text style={styles.cardTitle} numberOfLines={1} ellipsizeMode="tail">
-                Nearest Transit (Start)
+                Transit &amp; Bus Availability
               </Text>
               <Text style={styles.cardSubtitle} numberOfLines={1} ellipsizeMode="tail">
-                {summary.metroCount} Metro · {summary.busCount} Bus Stops &amp; Terminus
+                {summary.metroCount} Metro · {summary.busCount} Bus Stops &amp; Stands
               </Text>
             </View>
           </View>
@@ -84,7 +84,7 @@ export function TransportAvailabilityIndicator({
                 {summary.nearestStop.type === 'metro' ? '🚇' : '🚏'}
               </Text>
               <Text style={styles.nearestText} numberOfLines={1} ellipsizeMode="tail">
-                Nearest: <Text style={styles.nearestBold}>{summary.nearestStop.name}</Text>
+                Nearest at start: <Text style={styles.nearestBold}>{summary.nearestStop.name}</Text>
               </Text>
             </View>
             <View style={styles.nearestStopMeta}>
@@ -181,15 +181,15 @@ export function TransportAvailabilityIndicator({
                 </Text>
                 <Text style={styles.emptyTabTitle}>
                   {activeTab === 'metro'
-                    ? 'No Metro Stations Near Start'
+                    ? 'No Metro Stations Near Route'
                     : activeTab === 'bus'
-                    ? 'No Bus Stops / Terminus Near Start'
-                    : 'No Transit Stations Near Start'}
+                    ? 'No Bus Stops / Stands Near Route'
+                    : 'No Transit Stations Near Route'}
                 </Text>
                 <Text style={styles.emptyTabSubtext}>
                   {activeTab === 'metro'
-                    ? 'No metro stations detected within walking distance of your starting point.'
-                    : 'No bus stops or bus terminus detected within walking distance of your starting point.'}
+                    ? 'No metro stations detected within walking distance of your route.'
+                    : 'No bus stops or bus stands detected within walking distance of your route.'}
                 </Text>
               </View>
             ) : (
