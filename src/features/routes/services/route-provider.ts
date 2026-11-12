@@ -83,7 +83,12 @@ export async function getRouteOptions(
 
       for (let i = 0; i < rawRoutes.length; i++) {
         const dr = rawRoutes[i];
-        const routePlaces = await getPlacesNearRoute(dr.coordinates, 320);
+        const routePlaces = await getPlacesNearRoute(
+          dr.coordinates,
+          320,
+          journey.originName,
+          journey.destinationName,
+        );
         const calc = calculateNightActivityScore(
           dr.coordinates,
           routePlaces,

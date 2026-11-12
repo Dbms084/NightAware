@@ -127,7 +127,14 @@ export function PlaceMarker(props: PlaceMarkerProps) {
   const isOpen = props.place?.openAtJourneyTime ?? props.isOpen;
   const place = props.place;
 
-  const icon = PLACE_CATEGORY_ICONS[category] || '📍';
+  let icon = PLACE_CATEGORY_ICONS[category] || '📍';
+  if (category === 'transport') {
+    if (/metro|subway|mrt/i.test(name)) {
+      icon = '🚇';
+    } else if (/bus/i.test(name)) {
+      icon = '🚏';
+    }
+  }
   const label = PLACE_CATEGORY_LABELS[category] || 'Place';
 
   // Determine badge background color based on category & status

@@ -29,30 +29,53 @@ Fully configurable weighted evaluation model:
 | **Public transport accessibility** | **5** | Metro stations, bus terminals, and active transit hubs |
 | **TOTAL** | **100** | Configurable via `DEFAULT_SCORING_WEIGHTS` |
 
-### 3. Zero-Cost OpenStreetMap & Overpass Engine (100% Free — No Google Billing Required)
-- **Valhalla Routing Engine:** Real-world street routing via `https://valhalla1.openstreetmap.de/route` with polyline6 shape decoding and alternate route support.
+### 3. Zero-Cost OpenStreetMap & Valhalla Routing Engine (100% Free)
+- **Valhalla Routing Engine:** Real-world street routing via `https://valhalla1.openstreetmap.de/route` with Polyline6 shape decoding and alternate route support.
 - **Live OpenStreetMap Overpass POI Engine:** Live queries for real-world pharmacies, hospitals, police stations, transit hubs, and 24/7 supermarkets without requiring a credit card or Google Cloud billing.
 - **Dynamic Corridor Generator:** Intelligently distributes realistic nighttime establishments along the exact road coordinates of the route, ensuring rich listings in any city worldwide.
 - **Optional Google Maps Support:** Seamless automatic upgrade to Google Routes API v2 and Places API (New) if a billed Google Cloud key is provided in `.env`.
 
 ### 4. Honest Route Recommendation Engine (1–3 Routes, No Fabrication)
-Unlike the earlier version that always displayed 3 routes, the engine now returns **only the routes that were actually found** for the chosen origin and destination:
-
+Unlike synthetic demo models, the engine returns **only the routes that were actually found** for the chosen origin and destination:
 - **No offline fallback:** If the Valhalla router returns fewer than 3 routes, the app no longer fabricates or repeats demo data. It shows exactly what was found.
 - **1 route only:** Labeled `★ Recommended` and selected by default.
 - **2 routes:** Labeled `Safer profile` + `Fastest` (or `Balanced` if available).
 - **3 routes:** `Safer profile`, `Balanced`, `Fastest` — the full comparison layout.
-- **Empty slots** (when 1–2 routes exist) are visually marked as **"Not available"** with a dashed border and an explanatory note, so the user always sees a clear 3-slot layout without misleading data.
+- **Empty slots** (when 1–2 routes exist) are visually marked as **"Not available"** with a dashed border and an explanatory note, so the user always sees a clear layout without misleading data.
 - **Recommendation logic:** The `★ Recommended` badge always points to the route with the **highest Night Activity Score** among the available candidates.
 
-### 5. "Describe Route" Panel & Complete Establishment Directory
+### 5. Nearest Transit Availability Indicator (Starting Location Only)
+Exclusively rendered on the **Compare Routes** screen (`src/app/compare.tsx`), this indicator evaluates transit options specifically for the user's starting point:
+- **Strict 3-Category Classification:** Evaluates only real **Metro Stations**, **Bus Terminals**, and **Bus Stops**.
+- **Separate Filter Tabs:** Toggle between `🚇 Metro (count)`, `🚏 Bus (count)`, and `All (total)`.
+- **Zero Synthetic Generation:** Strictly real-world verified stations; if no metro station exists in the area, it honestly states none was found rather than inventing names.
+- **Nationwide & Global Coverage:** Offline registry covering 11+ metropolitan cities (Delhi NCR, Mumbai, Bengaluru, Kolkata, Chennai, Hyderabad, Pune, Ahmedabad, Jaipur, Lucknow, Kochi) plus live OpenStreetMap Overpass & Photon lookups globally.
+- **15km Sanity Filter:** Discards stale transit data when the user switches to a different city or location.
+- **Late-Night Availability & Alerts:** Displays operating hours (e.g. `05:30 – 23:30`), walking distance and estimated walk time from the starting point, frequency notes, and warning alerts when transit service is closed for the night.
+- **Responsive Card Layout:** Designed with auto-wrapping metadata, compact distance formatting (e.g. `1.8 km` instead of `1842m`), and bounded flex styling to prevent UI overflow on compact mobile screens.
+
+### 6. Custom Departure Date & Time Modal
+- **Interactive Departure Modal:** Allows setting any departure time up to 7 days in advance with dedicated date increment controls and scrollable hour/minute selectors.
+- **Accurate Nocturnal Modeling:** Dynamic arrival time predictions correctly handle midnight-crossing journeys (e.g. departing at 23:45 and arriving at 00:30), evaluating whether establishments will still be open when you pass.
+
+### 7. Live Corridor POIs & Interactive Map Badges
+- **Color-Coded Map Markers:** POIs are rendered along the active corridor with recognizable badges:
+  - 💊 **Purple:** 24/7 & late-night pharmacies
+  - 🏥 **Red:** Hospitals, clinics, and urgent healthcare
+  - 🚓 **Blue:** Police assistance booths and stations
+  - 🍽️ **Green:** Verified open shops, supermarkets, and restaurants
+  - ⛽ **Orange:** 24/7 petrol pumps and fuel stations
+  - 🚇 **Cyan:** Nearest metro stations and bus hubs
+- **Instant POI Visibility:** Pre-seeds markers directly from the scored route's establishments, eliminating blank-screen delays while background queries finish.
+
+### 8. "Describe Route" Panel & Complete Establishment Directory
 - **"📋 Describe Route" Action:** Dedicated button on each active route profile card.
 - **Categorized Places Directory:** Lists all establishments along the route categorized by `💊 Pharmacies`, `🏥 Hospitals`, `👮 Police`, `🏪 Open Shops`, `⛽ Petrol`, and `🚇 Transit`.
 - **Distance from Start:** Shows exact distance along the route for every single facility (e.g. `📍 350m along route`).
 - **Estimated Arrival Time:** Displays when you will reach each spot based on your departure time and travel speed (e.g. `⏰ Arrive ~10:48 PM`).
 - **One-Tap Phone Calling:** Direct call button (`📞 Call ...`) for emergency services and verified establishments.
 
-### 6. Open Shops & Arrival-Time Verification
+### 9. Open Shops & Arrival-Time Verification
 - **"🟢 Open Only" Filter Chip:** Quick filter pill on the map that hides closed shops and highlights only open establishments with active counts (e.g. `🟢 Open Only (8)`).
 - **Status Badges:** Each establishment card clearly displays its status:
   - `⭐ 24/7 OPEN` (Round-the-clock emergency access)
@@ -61,9 +84,9 @@ Unlike the earlier version that always displayed 3 routes, the engine now return
   - `🔴 CLOSED AT ARRIVAL` (Closed by the time you reach that spot)
 - **Operating Hours Display:** Explicitly shows scheduled hours (e.g. `🕒 08:00 – 23:30` or `🕒 Open 24 Hours`).
 
-### 7. Interactive Dark-Theme Map & Cross-Platform Web Preview
+### 10. Interactive Dark-Theme Map & Cross-Platform Web Preview
 - **Cross-Platform Support:** Runs natively on Android (via `react-native-maps` and Expo Go) AND directly in your laptop web browser via dedicated `.web.tsx` vector map components.
-- **Simultaneous Polylines:** All 3 candidate routes rendered with glowing selected halos.
+- **Simultaneous Polylines:** All candidate routes rendered with glowing selected halos.
 - **Road-Segment Activity Heatmap:** Toggleable visual overlay showing safety indicators along individual segments:
   - 🟢 Green: High nighttime activity
   - 🟡 Yellow: Moderate activity
@@ -72,12 +95,12 @@ Unlike the earlier version that always displayed 3 routes, the engine now return
 - **Interactive Map Markers:** Color-coded pins with active status badges (`●`), hover tooltips, and category filters.
 - **Active Navigation Mode:** Turn-by-turn guidance HUD, arrival countdowns, upcoming assistance ahead alerts, and an emergency SOS 112 button.
 
-### 8. Live Global Search (Zero Hardcoded Defaults)
+### 11. Live Global Search (Zero Hardcoded Defaults)
 - OpenStreetMap **Photon** (`photon.komoot.io`) & **Nominatim** live search.
 - Works in any city globally with no forced start or destination defaults.
 - Clean search modal with quick GPS pickup option.
 
-### 9. Watch over me : Active Night Companion & Safety Watchdog
+### 12. Watch Over Me: Active Night Companion & Safety Watchdog
 The **Watch over me** feature transforms NightAware from a static route comparison tool into an **active, real-time nighttime safety companion**. Once a user selects their preferred safe route (e.g. *Safer profile* with open pharmacies and high activity), activating **Watch over me** enables autonomous on-device monitoring to protect the journey until safe arrival.
 
 #### Key Capabilities:
@@ -104,18 +127,72 @@ The **Watch over me** feature transforms NightAware from a static route comparis
 ## 🛠️ Tech Stack & Architecture
 
 - **Mobile Framework:** React Native 0.88 with **Expo SDK 58** & TypeScript (Strict Mode)
-- **Routing & Navigation:** **Expo Router** (SPA client-side mode with Root Stack & Modals)
+- **Routing & Navigation:** **Expo Router** (file-based navigation with Root Stack & Modals)
 - **Map Engines:**
   - **Android:** Native Google Maps via `react-native-maps`
   - **Web:** Custom interactive vector map preview (`.web.tsx`)
 - **Styling:** **NativeWind v5** (Tailwind CSS v4) & StyleSheet
 - **Animations:** **React Native Reanimated 4**
-- **Spatial Database (Optional):** **Supabase** with **PostGIS** extension
+- **Authentication:** **Supabase Auth only** (Email/password registration, login, session persistence; no non-auth database storage)
 - **APIs & Data Sources:**
-  - OpenStreetMap OSRM (Routing)
-  - OpenStreetMap Overpass (Live Night POIs)
-  - OpenStreetMap Photon & Nominatim (Geocoding & Search)
-  - Google Routes API v2 & Places API (Optional fallback/upgrade)
+  - Valhalla Routing Engine (`https://valhalla1.openstreetmap.de/route`)
+  - OpenStreetMap Overpass API (Live Night POIs & Transit)
+  - OpenStreetMap Photon & Nominatim (Geocoding & Autocomplete Search)
+  - Google Routes API v2 & Places API (Optional billed fallback/upgrade)
+
+---
+
+## 📁 Project Structure
+
+```
+NightAware/
+├── app.config.js                    # Dynamic Expo configuration
+├── .env.example                     # Environment variables template
+├── src/
+│   ├── app/
+│   │   ├── _layout.tsx              # Root Stack Navigator & Auth Guard
+│   │   ├── compare.tsx              # Route Comparisons, Nearest Transit & Navigation HUD
+│   │   └── (app)/
+│   │       ├── _layout.tsx          # App tab layout
+│   │       ├── index.tsx            # Home Journey Planner & Map Preview
+│   │       └── explore.tsx          # Safety Explore Screen
+│   ├── components/
+│   │   ├── guardian/
+│   │   │   ├── WatchOverMeModal.tsx     # 1-Tap WhatsApp/SMS sharing & trip overview
+│   │   │   ├── ManageContactsModal.tsx  # Local trusted contacts manager (AsyncStorage)
+│   │   │   ├── GuardianActiveBanner.tsx # Live HUD status banner & safe arrival ping
+│   │   │   └── SafetyCheckInModal.tsx   # 90s countdown deviation & stoppage alert
+│   │   ├── map/
+│   │   │   ├── NightAwareMap.tsx        # Native Google Map (Android)
+│   │   │   ├── NightAwareMap.web.tsx    # Interactive Vector Map (Web Browser)
+│   │   │   ├── RoutePolyline.tsx        # Polyline rendering & Heatmaps (Native)
+│   │   │   ├── RoutePolyline.web.tsx    # SVG Polyline rendering (Web)
+│   │   │   ├── MapMarkers.tsx           # Markers & Category icons (Native)
+│   │   │   ├── MapMarkers.web.tsx       # Interactive POI pins with Open indicators (Web)
+│   │   │   ├── SafetyOverlay.tsx        # Translucent safety zones (Native & Web)
+│   │   │   └── RouteDetailSheet.tsx     # "Describe Route" sheet, POI directory & 9-parameter breakdown
+│   │   └── ui/
+│   │       ├── TransportAvailabilityIndicator.tsx # Starting point transit summary & stop list
+│   │       ├── NavigationSidebar.tsx    # Slide-out sidebar drawer with Demo Mode toggle
+│   │       ├── LocationSearchModal.tsx  # Global autocomplete search modal
+│   │       ├── SafetyReportModal.tsx    # Incident reporting modal
+│   │       └── Skeleton.tsx             # Animated pulse loading skeletons
+│   ├── features/
+│   │   ├── guardian/                    # Watch Over Me hooks, storage & geofencing
+│   │   ├── transit/                     # Multi-city transit stations, live Overpass & evaluation
+│   │   │   ├── data/transit-stations.ts # Registered transit for 11+ major metropolitan cities
+│   │   │   ├── services/transit-service.ts # Overpass transit queries, distance & hours
+│   │   │   └── types.ts                 # TransitStop, TransitSummary types
+│   │   ├── location/services/           # Photon & Nominatim live search service
+│   │   ├── places/services/             # Overpass POI queries & dynamic corridor generator
+│   │   ├── routes/services/             # Valhalla router, 9-parameter scoring engine
+│   │   └── reports/services/            # Safety reporting service
+│   ├── lib/
+│   │   ├── google-maps-api.ts       # Optional Google API client with graceful fallbacks
+│   │   └── supabase.ts              # Supabase Auth client
+│   └── types/
+│       └── geo.ts                   # Core TypeScript types for routes, POIs, scores
+```
 
 ---
 
@@ -138,10 +215,10 @@ Copy `.env.example` to create your local `.env`:
 Copy-Item .env.example .env
 ```
 
-Your `.env` file works 100% out of the box with free OpenStreetMap:
+Your `.env` file works 100% out of the box with free OpenStreetMap & Valhalla:
 ```env
 # -----------------------------------------------------------------------------
-# Supabase Configuration (Optional - for Auth & PostGIS caching)
+# Supabase Configuration (Auth Only)
 # -----------------------------------------------------------------------------
 EXPO_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
 EXPO_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key-here
@@ -167,57 +244,6 @@ npx expo start --web -c
 npx expo start -c
 ```
 *(Scan the terminal QR code using the **Expo Go** app on your phone).*
-
----
-
-## 📁 Project Structure
-
-```
-NightAware/
-├── app.config.js                    # Dynamic Expo configuration
-├── .env.example                     # Environment variables template
-├── src/
-│   ├── app/
-│   │   ├── _layout.tsx              # Root Stack Navigator & Theme Provider
-│   │   ├── compare.tsx              # 3-Route Comparison, "Describe Route" & Navigation HUD
-│   │   └── (app)/
-│   │       ├── _layout.tsx          # App tab layout
-│   │       ├── index.tsx            # Home Journey Planner & Map Preview
-│   │       └── explore.tsx          # Safety Explore Screen
-│   ├── components/
-│   │   ├── guardian/
-│   │   │   ├── WatchOverMeModal.tsx     # 1-Tap WhatsApp/SMS sharing & trip overview
-│   │   │   ├── ManageContactsModal.tsx  # Local trusted contacts manager (AsyncStorage)
-│   │   │   ├── GuardianActiveBanner.tsx # Live HUD status banner & safe arrival ping
-│   │   │   └── SafetyCheckInModal.tsx   # 90s countdown deviation & stoppage alert
-│   │   ├── map/
-│   │   │   ├── NightAwareMap.tsx        # Native Google Map (Android)
-│   │   │   ├── NightAwareMap.web.tsx    # Interactive Vector Map (Web Browser)
-│   │   │   ├── RoutePolyline.tsx        # Polyline rendering & Heatmaps (Native)
-│   │   │   ├── RoutePolyline.web.tsx    # SVG Polyline rendering (Web)
-│   │   │   ├── MapMarkers.tsx           # Markers & Category icons (Native)
-│   │   │   ├── MapMarkers.web.tsx       # Interactive POI pins with Open indicators (Web)
-│   │   │   ├── SafetyOverlay.tsx        # Translucent safety zones (Native & Web)
-│   │   │   └── RouteDetailSheet.tsx     # "Describe Route" sheet, POI directory & 9-parameter breakdown
-│   │   └── ui/
-│   │       ├── NavigationSidebar.tsx    # Slide-out sidebar drawer with Demo Mode toggle
-│   │       ├── LocationSearchModal.tsx  # Global autocomplete search modal
-│   │       ├── SafetyReportModal.tsx    # Incident reporting modal
-│   │       └── Skeleton.tsx             # Animated pulse loading skeletons
-│   ├── features/
-│   │   ├── guardian/                    # Watch Over Me hooks, storage & geofencing
-│   │   │   ├── hooks/                   # useGuardianContacts, useGuardianTracker
-│   │   │   └── services/                # guardian-storage, journey-share, geofence-utils
-│   │   ├── location/services/           # Photon & Nominatim live search service
-│   │   ├── places/services/             # Overpass POI queries & dynamic corridor generator
-│   │   ├── routes/services/             # 9-parameter scoring engine & OSRM multi-corridor router
-│   │   └── reports/services/            # Safety reporting service
-│   ├── lib/
-│   │   ├── google-maps-api.ts       # Optional Google API client with graceful fallbacks
-│   │   └── supabase.ts              # Supabase client
-│   └── types/
-│       └── geo.ts                   # Core TypeScript types for routes, POIs, scores
-```
 
 ---
 

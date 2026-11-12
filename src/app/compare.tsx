@@ -54,6 +54,9 @@ import { useGuardianContacts } from '@/features/guardian/hooks/useGuardianContac
 import { useGuardianTracker } from '@/features/guardian/hooks/useGuardianTracker';
 import { getPlacesNearRoute } from '@/features/places/services/place-provider';
 import { getRouteOptions, ROUTE_COLORS_BY_PROFILE } from '@/features/routes/services/route-provider';
+import { formatDuration, formatArrival } from '@/utils/format-time';
+import { TransportAvailabilityIndicator } from '@/components/ui/TransportAvailabilityIndicator';
+import { evaluateTransportAvailability } from '@/features/transit/services/transit-service';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
@@ -181,6 +184,8 @@ export default function CompareScreen() {
       destination: destination as Coordinate,
       departureTime,
       travelMode,
+      originName,
+      destinationName,
     })
       .then((fetched) => {
         if (!isMounted) return;
@@ -225,22 +230,37 @@ export default function CompareScreen() {
     primaryContact,
   });
 
-  // Load places near the selected route
+  // Active establishments along the selected route:
+  // Prefer dynamically fetched places, but immediately fall back to selectedRoute.establishments
+  // so the map, category filters, and detail sheet are NEVER empty while loading.
+  const activePlaces = useMemo(() => {
+    if (routePlaces && routePlaces.length > 0) return routePlaces;
+    if (selectedRoute?.establishments && selectedRoute.establishments.length > 0) {
+      return selectedRoute.establishments;
+    }
+    return [];
+  }, [routePlaces, selectedRoute]);
+
+  // Load places near the selected route, pre-seeding immediately with existing establishments
   useEffect(() => {
     if (!selectedRoute) {
       setRoutePlaces([]);
       return;
     }
+    // Pre-seed immediately with the route's already-calculated establishments
+    if (selectedRoute.establishments && selectedRoute.establishments.length > 0) {
+      setRoutePlaces(selectedRoute.establishments);
+    }
     let isMounted = true;
-    void getPlacesNearRoute(selectedRoute.coordinates, 320).then((places) => {
-      if (isMounted) {
+    void getPlacesNearRoute(selectedRoute.coordinates, 320, originName, destinationName).then((places) => {
+      if (isMounted && places && places.length > 0) {
         setRoutePlaces(places);
       }
     });
     return () => {
       isMounted = false;
     };
-  }, [selectedRoute]);
+  }, [selectedRoute?.id, originName, destinationName]);
 
   const handleSelectRoute = useCallback((id: string) => {
     setSelectedId(id);
@@ -273,9 +293,9 @@ export default function CompareScreen() {
 
   // Filtered establishments on map by active category filter
   const filteredPlaces = useMemo(() => {
-    if (selectedCategory === 'all') return routePlaces;
+    if (selectedCategory === 'all') return activePlaces;
     if (selectedCategory === 'open_only') {
-      return routePlaces.filter(
+      return activePlaces.filter(
         (p) =>
           p.is24_7 ||
           p.arrivalStatus === 'open_at_arrival' ||
@@ -283,8 +303,8 @@ export default function CompareScreen() {
           p.openAtJourneyTime === true,
       );
     }
-    return routePlaces.filter((p) => p.category === selectedCategory);
-  }, [routePlaces, selectedCategory]);
+    return activePlaces.filter((p) => p.category === selectedCategory);
+  }, [activePlaces, selectedCategory]);
 
   const isUsingRealData = routes.length > 0 && routes.every((r) => r.isMock === false);
 
@@ -311,12 +331,23 @@ export default function CompareScreen() {
 
   // Nearest help place ahead (for active navigation banner)
   const assistanceAhead = useMemo(() => {
-    return routePlaces.find(
+    return activePlaces.find(
       (p) =>
         ['pharmacy', 'hospital', 'police', 'petrol_station'].includes(p.category) &&
         (p.openAtJourneyTime === true || p.is24_7 === true),
     );
-  }, [routePlaces]);
+  }, [activePlaces]);
+
+  // Transport availability summary for the selected night route
+  const transportSummary = useMemo(() => {
+    return evaluateTransportAvailability(
+      activePlaces,
+      departureTime,
+      selectedRoute?.coordinates,
+      originName,
+      destinationName,
+    );
+  }, [activePlaces, departureTime, selectedRoute?.coordinates, originName, destinationName]);
 
   
   return (
@@ -572,16 +603,16 @@ export default function CompareScreen() {
               const isActive = selectedCategory === f.id;
               const count =
                 f.id === 'all'
-                  ? routePlaces.length
+                  ? activePlaces.length
                   : f.id === 'open_only'
-                  ? routePlaces.filter(
+                  ? activePlaces.filter(
                       (p) =>
                         p.is24_7 ||
                         p.arrivalStatus === 'open_at_arrival' ||
                         p.arrivalStatus === 'closing_soon' ||
                         p.openAtJourneyTime === true,
                     ).length
-                  : routePlaces.filter((p) => p.category === f.id).length;
+                  : activePlaces.filter((p) => p.category === f.id).length;
 
               return (
                 <Pressable
@@ -610,7 +641,7 @@ export default function CompareScreen() {
           <View style={styles.arrivalContextRow}>
             <Text style={styles.contextLeave}>Leave now</Text>
             <Text style={styles.contextArrive}>
-              {selectedRoute ? `Arrive in ~${selectedRoute.durationMinutes} min` : 'Evaluating routes...'}
+              {selectedRoute ? `Arrive in ~${formatDuration(selectedRoute.durationMinutes)}` : 'Evaluating routes...'}
             </Text>
           </View>
 
@@ -701,11 +732,11 @@ export default function CompareScreen() {
                             </View>
                           )}
                           {!isDuplicateSlot && route.extraMinutes > 0 && (
-                            <Text style={styles.routeTradeoff}>+{route.extraMinutes} min</Text>
+                            <Text style={styles.routeTradeoff}>+{formatDuration(route.extraMinutes)}</Text>
                           )}
                         </View>
                         <Text style={styles.routeDurationText}>
-                          {isDuplicateSlot ? '—' : `${route.durationMinutes} min`}
+                          {isDuplicateSlot ? '—' : formatDuration(route.durationMinutes)}
                           {!isDuplicateSlot && (
                             <Text style={styles.routeDistanceText}>
                               {' '}
@@ -748,6 +779,11 @@ export default function CompareScreen() {
                           <View style={styles.featurePill}>
                             <Text style={styles.featurePillText}>🛡️ {route.longestQuietStretchMeters}m max gap</Text>
                           </View>
+                          {route.publicTransportCount > 0 && (
+                            <View style={styles.featurePill}>
+                              <Text style={styles.featurePillText}>🚇 {route.publicTransportCount} transit</Text>
+                            </View>
+                          )}
                         </>
                       ) : route.profileType === 'balanced' ? (
                         <>
@@ -757,6 +793,11 @@ export default function CompareScreen() {
                           <View style={styles.featurePill}>
                             <Text style={styles.featurePillText}>⏱️ Balanced detour</Text>
                           </View>
+                          {route.publicTransportCount > 0 && (
+                            <View style={styles.featurePill}>
+                              <Text style={styles.featurePillText}>🚇 {route.publicTransportCount} transit</Text>
+                            </View>
+                          )}
                         </>
                       ) : (
                         <>
@@ -765,6 +806,11 @@ export default function CompareScreen() {
                               ⚠️ {route.longestQuietStretchMeters}m quiet stretch
                             </Text>
                           </View>
+                          {route.publicTransportCount > 0 && (
+                            <View style={styles.featurePill}>
+                              <Text style={styles.featurePillText}>🚇 {route.publicTransportCount} transit</Text>
+                            </View>
+                          )}
                         </>
                       )}
                     </View>
@@ -812,7 +858,7 @@ export default function CompareScreen() {
                                 Describe {route.label} Route
                               </Text>
                               <Text style={styles.describeRouteSubtitle}>
-                                View all {routePlaces.length} POIs & safety factors taken into account
+                                View all {activePlaces.length} POIs & safety factors taken into account
                               </Text>
                             </View>
                           </View>
@@ -849,6 +895,14 @@ export default function CompareScreen() {
               })
             )}
           </View>
+
+          {/* Transport Availability Indicator */}
+          {selectedRoute && !isLoading && !routeError && (
+            <TransportAvailabilityIndicator
+              summary={transportSummary}
+              onSelectStop={() => setShowDetail(true)}
+            />
+          )}
 
           {/* "Describe Route & Breakdown" Bar */}
           {selectedRoute && (
@@ -901,7 +955,18 @@ export default function CompareScreen() {
           <View style={styles.navProgressHeader}>
             <View>
               <Text style={styles.navTimeRemaining}>
-                {selectedRoute.durationMinutes} <Text style={styles.navMinLabel}>min</Text>
+                {selectedRoute.durationMinutes < 60 ? (
+                  <>
+                    {selectedRoute.durationMinutes} <Text style={styles.navMinLabel}>min</Text>
+                  </>
+                ) : (
+                  <>
+                    {Math.floor(selectedRoute.durationMinutes / 60)} <Text style={styles.navMinLabel}>hr</Text>
+                    {selectedRoute.durationMinutes % 60 > 0 ? (
+                      <> {selectedRoute.durationMinutes % 60} <Text style={styles.navMinLabel}>min</Text></>
+                    ) : null}
+                  </>
+                )}
               </Text>
               <Text style={styles.navDistRemaining}>
                 {(selectedRoute.distanceMeters / 1000).toFixed(1)} km remaining
@@ -975,12 +1040,15 @@ export default function CompareScreen() {
       {showDetail && selectedRoute && (
         <RouteDetailSheet
           route={selectedRoute}
-          places={routePlaces}
+          places={activePlaces}
           onClose={() => setShowDetail(false)}
           onStartNavigation={() => {
             setShowDetail(false);
             setIsNavigating(true);
           }}
+          departureTime={departureTime}
+          originName={originName}
+          destinationName={destinationName}
         />
       )}
 
@@ -1004,11 +1072,13 @@ export default function CompareScreen() {
           if (coord) {
             setOrigin(coord);
             setOriginName(name || fullAddress);
+            setRoutePlaces([]);
           }
         }}
         onSelectDestination={(coord, name, fullAddress) => {
           setDestination(coord);
           setDestinationName(name || fullAddress);
+          setRoutePlaces([]);
         }}
       />
 
@@ -1077,11 +1147,6 @@ export default function CompareScreen() {
   );
 }
 
-function formatArrival(mins: number, departureTime?: Date): string {
-  const base = departureTime ?? new Date();
-  const d = new Date(base.getTime() + mins * 60 * 1000);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
 
 // ---------------------------------------------------------------------------
 // Styles (Figma tokens)

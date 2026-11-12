@@ -20,6 +20,7 @@ import {
 } from '@/features/guardian/services/journey-share-service';
 import type { WatchOverMeJourneyDetails } from '@/features/guardian/types';
 import { ManageContactsModal } from './ManageContactsModal';
+import { formatDuration } from '@/utils/format-time';
 
 interface WatchOverMeModalProps {
   visible: boolean;
@@ -182,7 +183,7 @@ export function WatchOverMeModal({
                   <View style={styles.statBox}>
                     <Text style={styles.statLabel}>Expected Arrival</Text>
                     <Text style={styles.statValue}>~{formattedArrival}</Text>
-                    <Text style={styles.statSub}>in {route.durationMinutes} min</Text>
+                    <Text style={styles.statSub}>in {formatDuration(route.durationMinutes)}</Text>
                   </View>
                   <View style={styles.statBox}>
                     <Text style={styles.statLabel}>Route Profile</Text>

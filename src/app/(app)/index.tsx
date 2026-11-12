@@ -28,6 +28,7 @@ import { LocationSearchModal, type SearchField } from '@/components/ui/LocationS
 import { getRouteOptions, clearRouteCache, ROUTE_COLORS_BY_PROFILE } from '@/features/routes/services/route-provider';
 import { getPlacesNearRoute } from '@/features/places/services/place-provider';
 import { RouteCardSkeleton } from '@/components/ui/Skeleton';
+import { formatDuration } from '@/utils/format-time';
 import type { Coordinate, Place, RouteOption } from '@/types/geo';
 
 type TravelMode = 'Walking' | 'Cycling' | 'Driving';
@@ -37,32 +38,6 @@ const SCREEN_HEIGHT = Dimensions.get('window').height;
 const MAP_COLLAPSED_HEIGHT = 210;
 const ANIMATION_DURATION = 350;
 const EASING = Easing.bezier(0.2, 0.9, 0.3, 1);
-
-/**
- * Pre-defined departure slots. Each entry carries the display label and the
- * actual Date used by the routing engine, so the selected time is honoured
- * when building the JourneyRequest passed to getRouteOptions().
- *
- * Dates are generated relative to the current local calendar date so the
- * choices stay valid across app launches and across months/years, rather than
- * being pinned to a hardcoded November 2026 date.
- *
- * Defined at module scope so the Date instances are created once; the selected
- * slot is memoized on timeIndex in the component so it stays referentially
- * stable across renders (see the route-fetching useEffect dependency array).
- */
-const TIME_SLOTS: { label: string; date: Date }[] = (() => {
-  const today = new Date();
-  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0, 0);
-  const tonight2210 = new Date(todayMidnight.getTime() + 22 * 60 * 60 * 1000 + 10 * 60 * 1000);
-  const tonight2230 = new Date(todayMidnight.getTime() + 22 * 60 * 60 * 1000 + 30 * 60 * 1000);
-  const tomorrow0630 = new Date(todayMidnight.getTime() + 24 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000 + 30 * 60 * 1000);
-  return [
-    { label: 'Tonight, 22:10', date: tonight2210 },
-    { label: 'Tonight, 22:30', date: tonight2230 },
-    { label: 'Tomorrow, 06:30', date: tomorrow0630 },
-  ];
-})();
 
 type IconName = 'home' | 'account' | 'start' | 'walk' | 'bike' | 'car' | 'clock' | 'chevron' | 'moon' | 'routes' | 'info' | 'close' | 'search';
 
@@ -141,16 +116,8 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
 
   const [mode, setMode] = useState<TravelMode>('Walking');
-  const [timeIndex, setTimeIndex] = useState(0);
-  // Authoritative selected departure Date. It starts as the first preset slot
-  // (created once at module scope, so the initial reference is stable) and is
-  // only replaced — never mutated — when the user picks a different preset or
-  // confirms a custom date/time. Keeping it in `useState` (rather than
-  // recomputing it from `timeIndex` on every render) is what lets a custom
-  // selection survive after the user leaves the preset list, while the
-  // route-fetching useEffect depends on it directly so any change re-runs the
-  // journey. `timeIndex === -1` means "a custom time is active".
-  const [departureTime, setDepartureTime] = useState<Date>(TIME_SLOTS[0].date);
+  const [isCustomTimeSet, setIsCustomTimeSet] = useState(false);
+  const [departureTime, setDepartureTime] = useState<Date>(() => new Date());
 
   // Search Modal state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -208,26 +175,26 @@ export default function HomeScreen() {
   }, []);
 
   const openCustomTimeModal = useCallback(() => {
-    // Seed the modal with the currently-selected departure time, not a preset,
-    // so users can truly pick a custom date/time.
-    const seed = departureTime;
+    // Seed the modal with the currently-selected departure time (or current time if leaving now)
+    const now = new Date();
+    const seed = isCustomTimeSet && departureTime.getTime() > now.getTime() ? departureTime : now;
     setCustomDate(new Date(seed));
     setCustomHour(seed.getHours());
     setCustomMinute(seed.getMinutes());
     setCustomTimeError(null);
     setIsCustomTimeOpen(true);
-  }, [departureTime]);
+  }, [isCustomTimeSet, departureTime]);
 
   const shiftCustomDate = useCallback(
     (deltaDays: number) => {
       setCustomDate((prev) => {
-        const base = prev ?? TIME_SLOTS[timeIndex].date;
+        const base = prev ?? departureTime;
         const next = new Date(base);
         next.setDate(next.getDate() + deltaDays);
         return next;
       });
     },
-    [timeIndex],
+    [departureTime],
   );
 
   const confirmCustomTime = useCallback(() => {
@@ -250,9 +217,8 @@ export default function HomeScreen() {
       return;
     }
     setCustomTimeError(null);
-    // Commit the validated Date. This is a fresh Date instance, so the
-    // route-fetching effect sees a new reference and re-runs the journey.
-    setTimeIndex(-1);
+    setCustomDate(candidate);
+    setIsCustomTimeSet(true);
     setDepartureTime(candidate);
     setIsCustomTimeOpen(false);
   }, [customDate, customHour, customMinute]);
@@ -300,17 +266,25 @@ export default function HomeScreen() {
   }, [isCustomTimeOpen, customDate, customHour, customMinute, DATE_ITEMS]);
 
   const selectedDepartureLabel = useMemo(() => {
-    if (timeIndex >= 0) return TIME_SLOTS[timeIndex].label;
-    return customDate
-      ? customDate.toLocaleString([], {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        })
-      : 'Custom';
-  }, [timeIndex, customDate]);
+    if (isCustomTimeSet) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const departureDay = new Date(departureTime);
+      departureDay.setHours(0, 0, 0, 0);
+      const diffDays = Math.round((departureDay.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+      const timeStr = departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      if (diffDays === 0) {
+        return `Today, ${timeStr}`;
+      }
+      if (diffDays === 1) {
+        return `Tomorrow, ${timeStr}`;
+      }
+      const datePart = departureTime.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      return `${datePart}, ${timeStr}`;
+    }
+    return 'Now';
+  }, [isCustomTimeSet, departureTime]);
 
   const hasGpsLocation = location.permissionStatus === 'granted' && location.coordinate != null;
   const isUsingCustomStart = customStartCoord != null;
@@ -343,19 +317,35 @@ export default function HomeScreen() {
   const isUsingRealData = hasLocation && hasDestination;
   const primaryRoute = routes.length > 0 ? routes[0] : null;
 
-  // Fetch POIs along the primary route
+  // Active establishments along primary route or starting point:
+  // Prefer dynamically fetched places, but immediately fall back to primaryRoute.establishments
+  // so the map never flashes blank while computing.
+  const displayedPlaces = useMemo(() => {
+    if (routePlaces && routePlaces.length > 0) return routePlaces;
+    if (primaryRoute?.establishments && primaryRoute.establishments.length > 0) {
+      return primaryRoute.establishments;
+    }
+    return [];
+  }, [routePlaces, primaryRoute]);
+
+  // Fetch POIs along route or around starting location
   useEffect(() => {
-    if (!primaryRoute) return;
+    if (!originCoord) return;
+    // Pre-seed immediately with the route's already-calculated establishments
+    if (primaryRoute?.establishments && primaryRoute.establishments.length > 0) {
+      setRoutePlaces(primaryRoute.establishments);
+    }
     let isMounted = true;
-    void getPlacesNearRoute(primaryRoute.coordinates, 280).then((places) => {
-      if (isMounted) {
+    const coords = primaryRoute ? primaryRoute.coordinates : [originCoord, originCoord];
+    void getPlacesNearRoute(coords, 280, originLabel, destName ?? undefined).then((places) => {
+      if (isMounted && places && places.length > 0) {
         setRoutePlaces(places);
       }
     });
     return () => {
       isMounted = false;
     };
-  }, [primaryRoute]);
+  }, [originCoord, primaryRoute?.id, originLabel, destName]);
 
   // Dynamic map region: centers on current focus area or fits route
   const mapRegion = useMemo(() => {
@@ -450,6 +440,7 @@ export default function HomeScreen() {
       setCustomStartCoord(coord);
       setCustomStartName(coord ? name : null);
       setCustomStartAddress(coord ? fullAddress : null);
+      setRoutePlaces([]);
       clearRouteCache();
     },
     [],
@@ -461,6 +452,7 @@ export default function HomeScreen() {
       setDestCoord(coord);
       setDestName(name);
       setDestAddress(fullAddress);
+      setRoutePlaces([]);
       clearRouteCache();
     },
     [],
@@ -492,6 +484,8 @@ export default function HomeScreen() {
       destination: destCoord,
       departureTime,
       travelMode: modeMap[mode],
+      originName: originLabel,
+      destinationName: destName ?? undefined,
     })
       .then((fetched) => {
         if (!cancelled) {
@@ -671,45 +665,12 @@ export default function HomeScreen() {
               We estimate what will still be open when you pass, not just what's open now.
             </Text>
 
-            {/* Preset departure slots — tap to cycle through the three presets. */}
-            <View className="mt-4 flex-row gap-2">
-              {TIME_SLOTS.map((slot, idx) => {
-                const isPresetActive = timeIndex === idx;
-                return (
-                  <Pressable
-                    key={slot.label}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: isPresetActive }}
-                    onPress={() => {
-                      setTimeIndex(idx);
-                      setDepartureTime(slot.date);
-                      setCustomTimeError(null);
-                    }}
-                    className={`min-h-[40px] flex-1 items-center justify-center rounded-full border px-2 ${
-                      isPresetActive
-                        ? 'border-[#ff9400] bg-[#241a10]'
-                        : 'border-[#30363e] bg-[#1a1f24]'
-                    }`}
-                  >
-                    <Text
-                      className={`text-xs font-semibold ${
-                        isPresetActive ? 'text-[#ff9400]' : 'text-[#b0b7c0]'
-                      }`}
-                      numberOfLines={1}
-                    >
-                      {slot.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
             {/* Custom date & time — opens a modal with calendar + scrollable time. */}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Choose a custom departure date and time"
               onPress={openCustomTimeModal}
-              className="mt-3 min-h-[48px] flex-row items-center justify-center gap-2 rounded-full border border-dashed border-[#ff9400]/60 bg-[#241a10]/60 py-2"
+              className="mt-4 min-h-[48px] flex-row items-center justify-center gap-2 rounded-full border border-dashed border-[#ff9400]/60 bg-[#241a10]/60 py-2"
             >
               <Icon name="clock" color="#ff9400" size={18} />
               <Text className="text-base font-semibold text-[#ff9400]">Custom Date &amp; Time</Text>
@@ -746,7 +707,7 @@ export default function HomeScreen() {
                     selected
                   />
                 )}
-                {routePlaces.map((place) => (
+                {displayedPlaces.map((place) => (
                   <PlaceMarker key={place.id} place={place} />
                 ))}
                 {originCoord && <OriginMarker coordinate={originCoord} title={originLabel} />}
@@ -804,13 +765,13 @@ export default function HomeScreen() {
             <Icon name="routes" color="#101214" size={25} />
           </Pressable>
 
-          <View className="mt-7 flex-row items-center px-1">
+          {/* <View className="mt-7 flex-row items-center px-1">
             <Icon name="info" color="#84909c" size={22} />
             <Text className="ml-3 flex-1 text-base leading-6 text-[#84909c]">
               Activity indicators, not a safety guarantee.{' '}
               {isUsingRealData ? 'Valhalla routing + OpenStreetMap POIs.' : 'Demo data may be incomplete.'}
             </Text>
-          </View>
+          </View> */}
         </View>
       </ScrollView>
 
@@ -838,7 +799,7 @@ export default function HomeScreen() {
                 zIndex={routes.length - i}
               />
             ))}
-            {routePlaces.map((place) => (
+            {displayedPlaces.map((place) => (
               <PlaceMarker key={place.id} place={place} />
             ))}
             {originCoord && <OriginMarker coordinate={originCoord} title={originLabel} />}
@@ -873,7 +834,7 @@ export default function HomeScreen() {
                 <Text style={styles.expandedTitle}>{primaryRoute?.label || (destCoordFinal ? 'Recommended' : 'Your area')}</Text>
                 <Text style={styles.expandedSub}>
                   {primaryRoute
-                    ? `${primaryRoute.durationMinutes} min · ${(primaryRoute.distanceMeters / 1000).toFixed(1)} km`
+                    ? `${formatDuration(primaryRoute.durationMinutes)} · ${(primaryRoute.distanceMeters / 1000).toFixed(1)} km`
                     : 'Choose destination to compare'}
                 </Text>
               </View>
@@ -1080,7 +1041,13 @@ export default function HomeScreen() {
               <Text style={styles.previewLabel}>Departing</Text>
               <Text style={styles.previewValue}>
                 {customDate
-                  ? customDate.toLocaleString([], {
+                  ? new Date(
+                      customDate.getFullYear(),
+                      customDate.getMonth(),
+                      customDate.getDate(),
+                      customHour,
+                      customMinute,
+                    ).toLocaleString([], {
                       weekday: 'short',
                       month: 'short',
                       day: 'numeric',

@@ -1,5 +1,6 @@
 import { Linking, Platform, Share } from 'react-native';
 import type { WatchOverMeJourneyDetails } from '../types';
+import { formatDuration } from '@/utils/format-time';
 
 /**
  * Format a human-friendly arrival time (e.g. "11:42 PM").
@@ -38,7 +39,7 @@ export function createJourneyShareMessage(details: WatchOverMeJourneyDetails): s
     `🛡️ NightAware Live Trip: Watch Over Me\n` +
     `--------------------------------------\n` +
     `📍 Heading to: ${details.destinationName}\n` +
-    `🛣️ Route chosen: ${details.routeLabel} (${distanceKm} km, ~${details.durationMinutes} min)\n` +
+    `🛣️ Route chosen: ${details.routeLabel} (${distanceKm} km, ~${formatDuration(details.durationMinutes)})\n` +
     `⏰ Expected Arrival: ~${arrivalFormatted}\n` +
     `⭐ Night Activity Score: ${details.nightActivityScore}/100\n` +
     `🏪 Corridor Open Places: ${details.openPlacesCount} open POIs\n` +

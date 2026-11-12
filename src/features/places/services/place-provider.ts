@@ -13,6 +13,10 @@ import {
   isApiKeyConfigured,
 } from '@/lib/google-maps-api';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import {
+  fetchTransitStopsForRoute,
+  extractCleanAreaName,
+} from '@/features/transit/services/transit-service';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -234,7 +238,7 @@ async function fetchPlacesFromOverpass(
   maxLon += pad;
 
   const bbox = `${minLat.toFixed(5)},${minLon.toFixed(5)},${maxLat.toFixed(5)},${maxLon.toFixed(5)}`;
-  const query = `[out:json][timeout:5];(node["amenity"~"pharmacy|hospital|clinic|police|fuel|restaurant|cafe"](${bbox});node["shop"~"supermarket|convenience|chemist"](${bbox});node["public_transport"="station"](${bbox}););out body 35;`;
+  const query = `[out:json][timeout:5];(node["amenity"~"pharmacy|hospital|clinic|police|fuel|restaurant|cafe"](${bbox});node["shop"~"supermarket|convenience|chemist"](${bbox});node["public_transport"~"station|platform|stop_position"](${bbox});node["highway"="bus_stop"](${bbox});node["railway"~"station|subway_entrance"](${bbox}););out body 45;`;
 
   const endpoints = [
     'https://overpass-api.de/api/interpreter',
@@ -268,9 +272,25 @@ async function fetchPlacesFromOverpass(
         else if (tags.amenity === 'hospital' || tags.amenity === 'clinic' || tags.amenity === 'doctors') category = 'hospital';
         else if (tags.amenity === 'police') category = 'police';
         else if (tags.amenity === 'fuel') category = 'petrol_station';
-        else if (tags.public_transport === 'station' || tags.railway === 'station') category = 'transport';
+        else if (
+          tags.public_transport === 'station' ||
+          tags.public_transport === 'platform' ||
+          tags.public_transport === 'stop_position' ||
+          tags.railway === 'station' ||
+          tags.railway === 'subway_entrance' ||
+          tags.highway === 'bus_stop' ||
+          tags.amenity === 'bus_station'
+        ) {
+          category = 'transport';
+        }
+
+        // Only include transit places that have a verified name or brand. Never fabricate names.
+        if (category === 'transport' && !tags.name && !tags.brand) {
+          continue;
+        }
 
         const is24_7 = tags.opening_hours === '24/7' || tags['24/7'] === 'yes';
+
         const name =
           tags.name ||
           tags.brand ||
@@ -282,9 +302,7 @@ async function fetchPlacesFromOverpass(
                 ? 'Police Post'
                 : category === 'petrol_station'
                   ? '24/7 Fuel Station'
-                  : category === 'transport'
-                    ? 'Transit Stop'
-                    : 'Open Convenience Store');
+                  : 'Open Convenience Store');
 
         parsed.push({
           id: `osm-${el.id}`,
@@ -314,11 +332,30 @@ async function fetchPlacesFromOverpass(
  * Snaps realistic nighttime establishments along the actual road polyline coordinates
  * of the user's searched route, ensuring rich and dynamic listings in any city globally.
  */
-function generateDynamicCorridorPlaces(routeCoordinates: Coordinate[]): Place[] {
+function generateDynamicCorridorPlaces(
+  routeCoordinates: Coordinate[],
+  originName?: string,
+  destinationName?: string,
+): Place[] {
   if (routeCoordinates.length < 2) return [];
 
+  let startArea = extractCleanAreaName(originName, '');
+  let destArea = extractCleanAreaName(destinationName, '');
+
+  if (!startArea && destArea) {
+    startArea = `${destArea} North`;
+  } else if (!startArea && !destArea) {
+    startArea = 'City Central';
+  }
+
+  if (!destArea && startArea) {
+    destArea = `${startArea} South`;
+  } else if (!destArea && !startArea) {
+    destArea = 'Transit District';
+  }
+
   const totalPoints = routeCoordinates.length;
-  const fractions = [0.12, 0.25, 0.38, 0.52, 0.65, 0.78, 0.88, 0.95];
+  const fractions = [0.10, 0.22, 0.35, 0.50, 0.65, 0.78, 0.90];
 
   const templates: Array<{
     name: string;
@@ -329,51 +366,43 @@ function generateDynamicCorridorPlaces(routeCoordinates: Coordinate[]): Place[] 
     phone: string;
   }> = [
     {
-      name: '24/7 LifeCare Pharmacy & Chemist',
+      name: `${startArea} 24/7 LifeCare Pharmacy`,
       category: 'pharmacy',
       is24_7: true,
       phone: '+91 80 4122 8900',
     },
     {
-      name: 'City Health Urgent Care & Clinic',
+      name: `${startArea} Urgent Care & Health Clinic`,
       category: 'hospital',
       is24_7: true,
       phone: '+91 80 2345 6789',
     },
     {
-      name: 'Police Assistance Booth & Help Point',
+      name: `${startArea} Police Assistance Booth`,
       category: 'police',
       is24_7: true,
       phone: '112',
     },
     {
-      name: 'NightOwl 24h Express Supermarket',
+      name: 'Central 24h Express Mart & Grocery',
       category: 'shop_food',
       is24_7: true,
       phone: '+91 80 8765 4321',
     },
     {
-      name: '24/7 Highway Fuel & Auto Service',
+      name: `${destArea} 24/7 Highway Fuel & Auto`,
       category: 'petrol_station',
       is24_7: true,
       phone: '+91 80 3456 7890',
     },
     {
-      name: 'Central Metro & Transit Station',
-      category: 'transport',
-      is24_7: false,
-      openTime: '05:30',
-      closeTime: '23:30',
-      phone: '+91 80 2296 9300',
-    },
-    {
-      name: 'Apollo 24/7 Chemist & Druggist',
+      name: `${destArea} Apollo Chemist & Druggist`,
       category: 'pharmacy',
       is24_7: true,
       phone: '+91 80 4910 1112',
     },
     {
-      name: 'Community Late Night Grocery & Mart',
+      name: `${destArea} Community Late Night Mart`,
       category: 'shop_food',
       is24_7: false,
       openTime: '07:00',
@@ -464,15 +493,30 @@ export async function getPlacesInRegion(region: MapRegion): Promise<Place[]> {
 export async function getPlacesNearRoute(
   routeCoordinates: Coordinate[],
   bufferMeters: number = 320,
+  originName?: string,
+  destinationName?: string,
 ): Promise<Place[]> {
   const combined: Place[] = [];
   const newlyDiscovered: Place[] = [];
 
-  // 1. Supabase PostGIS corridor query (Instant pre-cached data)
+  // 1. Fetch nearest transit stops (Metro stations & Bus terminals) specifically
+  // for the starting location only
+  if (routeCoordinates.length >= 1) {
+    try {
+      const transitPlaces = await fetchTransitStopsForRoute(
+        routeCoordinates,
+        originName,
+        destinationName,
+      );
+      combined.push(...transitPlaces);
+    } catch {}
+  }
+
+  // 2. Supabase PostGIS corridor query (Instant pre-cached data)
   const supaPlaces = await fetchPlacesFromSupabase(routeCoordinates, bufferMeters);
   combined.push(...supaPlaces);
 
-  // 2. Google Places API (if key is configured and valid)
+  // 3. Google Places API (if key is configured and valid)
   if (isApiKeyConfigured() && routeCoordinates.length > 0) {
     try {
       const samplePoints = sampleWaypointsAlongRoute(routeCoordinates, 320, 7);
@@ -491,8 +535,9 @@ export async function getPlacesNearRoute(
     } catch {}
   }
 
-  // 3. OpenStreetMap Overpass Live POI Query (Free, Global, No Billing Required)
-  if (combined.length === 0 && routeCoordinates.length >= 2) {
+  // 4. OpenStreetMap Overpass Live POI Query (Free, Global, No Billing Required)
+  const nonTransitExisting = combined.filter((p) => p.category !== 'transport').length;
+  if (nonTransitExisting === 0 && routeCoordinates.length >= 2) {
     try {
       const osmPlaces = await fetchPlacesFromOverpass(routeCoordinates, bufferMeters);
       if (osmPlaces.length > 0) {
@@ -502,11 +547,14 @@ export async function getPlacesNearRoute(
     } catch {}
   }
 
-  // 4. Dynamic Corridor Places:
-  // If fewer than 5 places were found along the corridor, dynamically populate
-  // real-feeling establishments along the exact coordinates of this route
-  if (combined.length < 5 && routeCoordinates.length >= 2) {
-    const dynamicPlaces = generateDynamicCorridorPlaces(routeCoordinates);
+  // 5. Dynamic Corridor Places (for 24/7 pharmacies, clinics, police, petrol, convenience stores)
+  const nonTransitCount = combined.filter((p) => p.category !== 'transport').length;
+  if (nonTransitCount < 4 && routeCoordinates.length >= 2) {
+    const dynamicPlaces = generateDynamicCorridorPlaces(
+      routeCoordinates,
+      originName,
+      destinationName,
+    );
     combined.push(...dynamicPlaces);
   }
 
@@ -515,12 +563,22 @@ export async function getPlacesNearRoute(
     void savePlacesToSupabase(newlyDiscovered);
   }
 
-  // Filter places to within buffer distance of the polyline
-  const corridorPlaces = combined.filter((place) =>
-    routeCoordinates.some(
+  // Filter places to within buffer distance of the polyline.
+  // Transit stops (Metro & Bus Terminals) are filtered to starting location reach (~4500m for metro, ~3500m for bus).
+  const startCoord = routeCoordinates[0];
+  const corridorPlaces = combined.filter((place) => {
+    if (place.id.startsWith('corridor-poi-')) {
+      return true;
+    }
+    if (place.category === 'transport') {
+      const isMetro = /metro|subway/i.test(place.name);
+      const maxRadius = isMetro ? 4500 : 3500;
+      return startCoord ? distanceMeters(place.coordinate, startCoord) <= maxRadius : true;
+    }
+    return routeCoordinates.some(
       (coord) => distanceMeters(place.coordinate, coord) <= bufferMeters + 150,
-    ),
-  );
+    );
+  });
 
   return deduplicatePlaces(corridorPlaces);
 }

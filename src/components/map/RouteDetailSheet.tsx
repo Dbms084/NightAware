@@ -7,7 +7,7 @@
  * - Complete scrollable list of every establishment with arrival times & direct Call button.
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   Linking,
   Pressable,
@@ -19,6 +19,9 @@ import {
 
 import type { Place, PlaceCategory, RouteOption } from '@/types/geo';
 import { PLACE_CATEGORY_ICONS, PLACE_CATEGORY_LABELS, PLACE_MARKER_COLORS } from '@/types/geo';
+import { formatDuration } from '@/utils/format-time';
+import { TransportAvailabilityIndicator } from '@/components/ui/TransportAvailabilityIndicator';
+import { evaluateTransportAvailability } from '@/features/transit/services/transit-service';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -31,6 +34,9 @@ export type RouteDetailSheetProps = {
   onFocusPlace?: (place: Place) => void;
   onStartNavigation?: () => void;
   initialTab?: 'analysis' | 'places';
+  departureTime?: Date;
+  originName?: string;
+  destinationName?: string;
 };
 
 const CATEGORY_TABS = [
@@ -50,18 +56,73 @@ export function RouteDetailSheet({
   onFocusPlace,
   onStartNavigation,
   initialTab = 'analysis',
+  departureTime,
+  originName,
+  destinationName,
 }: RouteDetailSheetProps) {
   const [activeTab, setActiveTab] = useState<'analysis' | 'places'>(initialTab);
   const [placeCategory, setPlaceCategory] = useState<string>('all');
   const [onlyOpen, setOnlyOpen] = useState(false);
   const score = route.nightActivityScore;
+
+  const transportSummary = useMemo(() => {
+    return evaluateTransportAvailability(
+      places,
+      departureTime ?? new Date(),
+      route.coordinates,
+      originName,
+      destinationName,
+    );
+  }, [places, departureTime, route.coordinates, originName, destinationName]);
   const breakdown = route.scoreBreakdown;
 
-  // Establishments sorted by distance from start
-  const establishments = (route.establishments && route.establishments.length > 0
-    ? route.establishments
-    : places
-  ).sort((a, b) => (a.distanceFromStartMeters ?? 0) - (b.distanceFromStartMeters ?? 0));
+  // 1. Base safety POIs along route (pharmacies, hospitals, police, petrol, open shops)
+  const baseSafetyPlaces = useMemo(() => {
+    // Prefer dynamically fetched places over static route.establishments
+    const pool = (places && places.length > 0
+      ? places
+      : route.establishments && route.establishments.length > 0
+      ? route.establishments
+      : []
+    );
+    // Strip un-synchronized or outdated transport items from base pool
+    return pool.filter((p) => p.category !== 'transport');
+  }, [places, route.establishments]);
+
+  // 2. Dynamic transit places strictly synchronized with nearest transit evaluation
+  const nearestTransitPlaces = useMemo((): Place[] => {
+    if (!transportSummary || !transportSummary.stops || transportSummary.stops.length === 0) {
+      return [];
+    }
+
+    return transportSummary.stops.map((stop) => {
+      const isMetro = stop.subType === 'metro' || stop.type === 'metro';
+      const isTerminus = stop.subType === 'bus_terminus';
+      return {
+        id: stop.id,
+        name: stop.name,
+        category: 'transport' as PlaceCategory,
+        coordinate: stop.coordinate,
+        distanceFromStartMeters: stop.distanceMeters,
+        distanceFromRouteMeters: stop.distanceMeters,
+        openAtJourneyTime: stop.isOpenAtTime,
+        arrivalStatus: stop.isOpenAtTime ? 'open_at_arrival' : 'closed_at_arrival',
+        openTime: stop.openTime,
+        closeTime: stop.closeTime,
+        is24_7: stop.statusText.includes('24/7'),
+        dataSource: 'provider',
+        address: `${isMetro ? '🚇 Metro Station' : isTerminus ? '🏢 Bus Terminus' : '🚏 Bus Stop'} · ~${stop.walkingMinutes} min walk from start`,
+        phone: '112',
+      };
+    });
+  }, [transportSummary, places, route.establishments]);
+
+  // 3. Combined establishments sorted by distance from start
+  const establishments = useMemo(() => {
+    return [...baseSafetyPlaces, ...nearestTransitPlaces].sort(
+      (a, b) => (a.distanceFromStartMeters ?? 0) - (b.distanceFromStartMeters ?? 0),
+    );
+  }, [baseSafetyPlaces, nearestTransitPlaces]);
 
   const openCount = establishments.filter(
     (p) =>
@@ -119,11 +180,11 @@ export function RouteDetailSheet({
               />
               <Text style={styles.profileBadge}>{route.label}</Text>
               {route.extraMinutes > 0 && (
-                <Text style={styles.extraTimeText}>+{route.extraMinutes} min</Text>
+                <Text style={styles.extraTimeText}>+{formatDuration(route.extraMinutes)}</Text>
               )}
             </View>
             <Text style={styles.metricsSummary}>
-              {route.durationMinutes} min · {(route.distanceMeters / 1000).toFixed(1)} km
+              {formatDuration(route.durationMinutes)} · {(route.distanceMeters / 1000).toFixed(1)} km
             </Text>
           </View>
 
@@ -258,6 +319,12 @@ export function RouteDetailSheet({
                   icon="🚇"
                 />
               </View>
+
+              {/* Transport Availability Indicator Section */}
+              <TransportAvailabilityIndicator
+                summary={transportSummary}
+                initiallyExpanded={false}
+              />
 
               {/* Disclaimer */}
               <Text style={styles.disclaimerText}>

@@ -42,6 +42,8 @@ export type JourneyRequest = {
   destination: Coordinate;
   departureTime: Date;
   travelMode: TravelMode;
+  originName?: string;
+  destinationName?: string;
 };
 
 // ---------------------------------------------------------------------------

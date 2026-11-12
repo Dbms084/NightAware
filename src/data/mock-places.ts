@@ -312,6 +312,26 @@ const transport: Place[] = [
     closeTime: '23:30',
     dataSource: 'mock',
   },
+  {
+    id: 'trans-5',
+    name: 'Swami Vivekananda Road Metro',
+    coordinate: { latitude: 12.9785, longitude: 77.6430 },
+    category: 'transport',
+    openAtJourneyTime: true,
+    openTime: '05:30',
+    closeTime: '23:30',
+    dataSource: 'mock',
+  },
+  {
+    id: 'trans-6',
+    name: '12th Main Night Bus Shelter',
+    coordinate: { latitude: 12.9680, longitude: 77.6420 },
+    category: 'transport',
+    openAtJourneyTime: true,
+    openTime: '05:00',
+    closeTime: '00:30',
+    dataSource: 'mock',
+  },
 ];
 
 // ---------------------------------------------------------------------------
